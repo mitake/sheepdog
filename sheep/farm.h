@@ -50,4 +50,9 @@ extern int trunk_file_write(unsigned char *outsha1);
 extern void *trunk_file_read(unsigned char *sha1, struct sha1_file_hdr *);
 extern int trunk_update_entry(uint64_t oid);
 
+/* snap.c */
+extern int snap_init(void);
+extern void *snap_file_read(unsigned char *sha1, struct sha1_file_hdr *outhdr);
+extern int snap_file_write(unsigned char *outsha1);
+
 #endif

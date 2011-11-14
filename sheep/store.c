@@ -33,7 +33,7 @@ struct sheepdog_config {
 };
 
 static char *obj_path;
-static char *epoch_path;
+char *epoch_path;
 static char *mnt_path;
 static char *jrnl_path;
 static char *config_path;

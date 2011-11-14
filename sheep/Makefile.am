@@ -24,7 +24,7 @@ INCLUDES		= -I$(top_builddir)/include -I$(top_srcdir)/include $(libcpg_CFLAGS) $
 sbin_PROGRAMS		= sheep
 
 sheep_SOURCES		= sheep.c group.c sdnet.c store.c vdi.c work.c journal.c ops.c \
-			  cluster/local.c
+			  cluster/local.c util.c strbuf.c slabs.c
 if BUILD_COROSYNC
 sheep_SOURCES		+= cluster/corosync.c
 endif
@@ -32,11 +32,13 @@ if BUILD_ZOOKEEPER
 sheep_SOURCES		+= cluster/zookeeper.c
 endif
 
-sheep_LDADD	  	= $(libcpg_LIBS) $(libcfg_LIBS) ../lib/libsheepdog.a -lpthread
+sheep_SOURCES		+= farm/sha1_file.c farm/trunk.c farm/snap.c farm/farm.c
+
+sheep_LDADD	  	= $(libcpg_LIBS) $(libcfg_LIBS) ../lib/libsheepdog.a -lpthread -lssl -lz
 sheep_DEPENDENCIES	= ../lib/libsheepdog.a
 
 
-noinst_HEADERS		= work.h sheep_priv.h cluster.h
+noinst_HEADERS		= work.h sheep_priv.h cluster.h farm.h strbuf.h slabs.h
 
 EXTRA_DIST		= 
 

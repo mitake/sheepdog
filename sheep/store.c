@@ -32,7 +32,7 @@ struct sheepdog_config {
 	uint8_t pad[3];
 };
 
-static char *obj_path;
+char *obj_path;
 char *epoch_path;
 static char *mnt_path;
 static char *jrnl_path;

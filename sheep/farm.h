@@ -36,6 +36,17 @@ struct sha1_file_hdr {
 };
 
 extern char *epoch_path;
+extern char *obj_path;
+
+/* farm.c */
+extern char farm_dir[PATH_MAX];
+extern char farm_obj_dir[PATH_MAX];
+
+extern int farm_init(char *);
+extern ssize_t farm_object_put(uint64_t oid, void *buf, int len, off_t offset);
+extern ssize_t farm_object_get(uint64_t oid, void *buf, int len, off_t offset);
+extern int farm_object_open(uint64_t oid);
+extern int farm_object_close(uint64_t oid);
 
 /* sha1_file.c */
 extern char *sha1_to_path(const unsigned char *sha1);

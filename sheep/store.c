@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <time.h>
+#include <pthread.h>
 
 #include "sheep_priv.h"
 #include "strbuf.h"
@@ -44,6 +45,7 @@ static mode_t def_dmode = S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP | S_IWGRP | S_IX
 mode_t def_fmode = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP;
 
 extern struct store_driver store;
+static pthread_mutex_t recover_mux = PTHREAD_MUTEX_INITIALIZER;
 
 static int obj_cmp(const void *oid1, const void *oid2)
 {
@@ -128,6 +130,7 @@ int get_obj_list(const struct sd_list_req *hdr, struct sd_list_rsp *rsp, void *d
 	objlist = (uint64_t *)buf;
 	dprintf("%d, %d, %d, %d\n", sys->prev_rw_epoch, sys->recovered_epoch,
 		hdr->tgt_epoch, sys->epoch);
+	pthread_mutex_lock(&recover_mux);
 	from = sys->prev_rw_epoch;
 	to = sys->prev_rw_epoch > hdr->tgt_epoch ? sys->prev_rw_epoch : hdr->tgt_epoch;
 	for (epoch = from; epoch <= to; epoch++) {
@@ -157,6 +160,7 @@ int get_obj_list(const struct sd_list_req *hdr, struct sd_list_rsp *rsp, void *d
 
 		nr = merge_objlist(NULL, 0, p, nr, objlist, obj_nr, 0);
 	}
+	pthread_mutex_unlock(&recover_mux);
 out:
 	free(buf);
 	rsp->data_length = nr * sizeof(uint64_t);
@@ -1527,6 +1531,19 @@ int is_recoverying_oid(uint64_t oid)
 	return 0;
 }
 
+static void store_remove_stale_obj(uint32_t epoch)
+{
+	struct strbuf path = STRBUF_INIT;
+	dprintf("%u\n", epoch);
+	while(epoch) {
+		strbuf_addf(&path, "%s%08u", obj_path, epoch--);
+		if (rmdir_r(path.buf) < 0)
+			break;
+		strbuf_reset(&path);
+	}
+	strbuf_release(&path);
+}
+
 static void recover_done(struct work *work, int idx)
 {
 	struct recovery_work *rw = container_of(work, struct recovery_work, work);
@@ -1576,8 +1593,11 @@ static void recover_done(struct work *work, int idx)
 		recovering_work = rw;
 		queue_work(sys->recovery_wqueue, &rw->work);
 	} else {
+		pthread_mutex_lock(&recover_mux);
 		sys->prev_rw_epoch = sys->recovered_epoch;
 		sys->recovered_epoch = rw_epoch;
+		pthread_mutex_unlock(&recover_mux);
+		store_remove_stale_obj(sys->prev_rw_epoch - 1);
 		dprintf("recovery complete: new epoch %"PRIu32"\n", rw_epoch);
 	}
 }

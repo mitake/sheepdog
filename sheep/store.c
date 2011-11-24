@@ -106,7 +106,7 @@ int get_obj_list(const struct sd_list_req *hdr, struct sd_list_rsp *rsp, void *d
 	DIR *dir;
 	struct dirent *d;
 	uint64_t oid;
-	uint32_t epoch;
+	uint32_t epoch, from, to;
 	char path[1024];
 	uint64_t *p = (uint64_t *)data;
 	int nr = 0;
@@ -126,7 +126,11 @@ int get_obj_list(const struct sd_list_req *hdr, struct sd_list_rsp *rsp, void *d
 	}
 
 	objlist = (uint64_t *)buf;
-	for (epoch = 1; epoch <= hdr->tgt_epoch; epoch++) {
+	dprintf("%d, %d, %d, %d\n", sys->prev_rw_epoch, sys->recovered_epoch,
+		hdr->tgt_epoch, sys->epoch);
+	from = sys->prev_rw_epoch;
+	to = sys->prev_rw_epoch > hdr->tgt_epoch ? sys->prev_rw_epoch : hdr->tgt_epoch;
+	for (epoch = from; epoch <= to; epoch++) {
 		snprintf(path, sizeof(path), "%s%08u/", obj_path, epoch);
 
 		dprintf("%"PRIu32", %s\n", sys->this_node.port, path);
@@ -1527,6 +1531,7 @@ static void recover_done(struct work *work, int idx)
 {
 	struct recovery_work *rw = container_of(work, struct recovery_work, work);
 	uint64_t oid;
+	uint32_t rw_epoch = rw->epoch;
 
 	if (rw->state == RW_INIT)
 		rw->state = RW_RUN;
@@ -1558,11 +1563,7 @@ static void recover_done(struct work *work, int idx)
 		queue_work(sys->recovery_wqueue, &rw->work);
 		return;
 	}
-
-	dprintf("recovery complete: new epoch %"PRIu32"\n", rw->epoch);
 	recovering_work = NULL;
-
-	sys->recovered_epoch = rw->epoch;
 	resume_pending_requests();
 
 	free(rw->oids);
@@ -1574,6 +1575,10 @@ static void recover_done(struct work *work, int idx)
 
 		recovering_work = rw;
 		queue_work(sys->recovery_wqueue, &rw->work);
+	} else {
+		sys->prev_rw_epoch = sys->recovered_epoch;
+		sys->recovered_epoch = rw_epoch;
+		dprintf("recovery complete: new epoch %"PRIu32"\n", rw_epoch);
 	}
 }
 

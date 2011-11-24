@@ -146,6 +146,7 @@ struct cluster_info {
 	unsigned int outstanding_data_size;
 
 	uint32_t recovered_epoch;
+	uint32_t prev_rw_epoch;
 
 	int use_directio;
 

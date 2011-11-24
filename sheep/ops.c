@@ -147,6 +147,7 @@ static int cluster_make_fs(const struct sd_req *req, struct sd_rsp *rsp,
 
 	sys->epoch = 1;
 	sys->recovered_epoch = 1;
+	sys->prev_rw_epoch = 1;
 
 	ret = update_epoch_log(sys->epoch);
 	if (ret)

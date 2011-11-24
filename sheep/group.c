@@ -575,6 +575,8 @@ join_finished:
 			set_cluster_copies(sys->nr_sobjs);
 			set_cluster_flags(sys->flags);
 			set_cluster_ctime(msg->ctime);
+			sys->prev_rw_epoch = sys->epoch;
+			sys->recovered_epoch = sys->epoch;
 		}
 	}
 

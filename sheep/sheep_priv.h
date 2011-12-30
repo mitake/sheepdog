@@ -166,7 +166,8 @@ struct siocb {
 };
 
 struct store_driver {
-	const char *driver_name;
+	struct list_head list;
+	const char *name;
 	int (*init)(char *path);
 	int (*open)(uint64_t oid, struct siocb *, int create);
 	int (*write)(uint64_t oid, struct siocb *);
@@ -178,7 +179,33 @@ struct store_driver {
 	int (*atomic_put)(uint64_t oid, struct siocb *);
 };
 
-extern void register_store_driver(struct store_driver *);
+extern struct list_head store_drivers;
+#define add_store_driver(driver)                                 \
+static void __attribute__((constructor)) add_ ## driver(void) {  \
+        list_add(&driver.list, &store_drivers);                  \
+}
+
+static inline struct store_driver *find_store_driver(const char *name)
+{
+	struct store_driver *driver;
+
+	list_for_each_entry(driver, &store_drivers, list) {
+		if (strcmp(driver->name, name) == 0)
+			return driver;
+	}
+	return NULL;
+}
+
+static inline const char *index_to_name(int idx)
+{
+        static const char *stores[] = {
+		[0] = "simple",
+	};
+
+	if (idx < 0 || idx >= ARRAY_SIZE(stores))
+		return "INVALID";
+	return stores[idx];
+}
 
 extern struct cluster_info *sys;
 
@@ -241,6 +268,9 @@ int store_create_and_write_obj(const struct sd_req *, struct sd_rsp *, void *);
 int store_write_obj(const struct sd_req *, struct sd_rsp *, void *);
 int store_read_obj(const struct sd_req *, struct sd_rsp *, void *);
 int store_remove_obj(const struct sd_req *, struct sd_rsp *, void *);
+
+int store_file_write(void *buffer, size_t len);
+void *store_file_read(void);
 
 #define NR_GW_WORKER_THREAD 4
 #define NR_IO_WORKER_THREAD 4

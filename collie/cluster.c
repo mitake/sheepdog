@@ -20,12 +20,60 @@ struct cluster_cmd_data {
 	int copies;
 	int nohalt;
 	int force;
+	char argv[10];
 } cluster_cmd_data;
 
 static void set_nohalt(uint16_t *p)
 {
 	if (p)
 		*p |= SD_FLAG_NOHALT;
+}
+
+static int get_store_index(char *name)
+{
+	int ret = -1;
+	if (!strlen(name) || strcmp(name, "simple") == 0)
+		ret = 0;
+	return ret;
+}
+
+static int list_store(void)
+{
+	int fd, ret;
+	struct sd_req hdr;
+	struct sd_rsp *rsp = (struct sd_rsp *)&hdr;
+	unsigned rlen, wlen;
+	char buf[512] = { 0 };
+
+	fd = connect_to(sdhost, sdport);
+	if (fd < 0)
+		return EXIT_SYSFAIL;
+
+	memset(&hdr, 0, sizeof(hdr));
+
+        wlen = 0;
+        rlen = 512;
+        hdr.opcode = SD_OP_GET_STORE_LIST;
+        hdr.data_length = rlen;
+
+        ret = exec_req(fd, &hdr, buf, &wlen, &rlen);
+        close(fd);
+
+        if (ret) {
+                fprintf(stderr, "Failed to connect\n");
+                return EXIT_FAILURE;
+        }
+
+        if (rsp->result != SD_RES_SUCCESS) {
+                fprintf(stderr, "Restore failed: %s\n",
+                                sd_strerror(rsp->result));
+                return EXIT_FAILURE;
+        }
+
+	printf("Available stores:\n");
+	printf("---------------------------------------\n");
+	printf("%s\n", buf);
+	return EXIT_SUCCESS;
 }
 
 static int cluster_format(int argc, char **argv)
@@ -35,6 +83,9 @@ static int cluster_format(int argc, char **argv)
 	struct sd_so_rsp *rsp = (struct sd_so_rsp *)&hdr;
 	unsigned rlen, wlen;
 	struct timeval tv;
+	uint8_t idx;
+
+	idx = get_store_index(cluster_cmd_data.argv);
 
 	fd = connect_to(sdhost, sdport);
 	if (fd < 0)
@@ -50,6 +101,7 @@ static int cluster_format(int argc, char **argv)
 		set_nohalt(&hdr.flags);
 	hdr.epoch = node_list_version;
 	hdr.ctime = (uint64_t) tv.tv_sec << 32 | tv.tv_usec * 1000;
+	hdr.index = idx;
 
 	rlen = 0;
 	wlen = 0;
@@ -64,7 +116,7 @@ static int cluster_format(int argc, char **argv)
 	if (rsp->result != SD_RES_SUCCESS) {
 		fprintf(stderr, "Format failed: %s\n",
 				sd_strerror(rsp->result));
-		return EXIT_FAILURE;
+		return list_store();
 	}
 
 	return EXIT_SUCCESS;
@@ -237,7 +289,7 @@ static int cluster_recover(int argc, char **argv)
 static struct subcommand cluster_cmd[] = {
 	{"info", NULL, "aprh", "show cluster information",
 	 0, cluster_info},
-	{"format", NULL, "cHaph", "create a Sheepdog store",
+	{"format", NULL, "bcHaph", "create a Sheepdog store",
 	 0, cluster_format},
 	{"shutdown", NULL, "aph", "stop Sheepdog",
 	 SUBCMD_FLAG_NEED_NODELIST, cluster_shutdown},
@@ -252,6 +304,9 @@ static int cluster_parser(int ch, char *opt)
 	char *p;
 
 	switch (ch) {
+	case 'b':
+		strcpy(cluster_cmd_data.argv, opt);
+		break;
 	case 'c':
 		copies = strtol(opt, &p, 10);
 		if (opt == p || copies < 1) {

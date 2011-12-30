@@ -43,7 +43,8 @@ static char *config_path;
 static mode_t def_dmode = S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP | S_IWGRP | S_IXGRP;
 mode_t def_fmode = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP;
 
-extern struct store_driver store;
+struct store_driver *sd_store;
+LIST_HEAD(store_drivers);
 
 static int obj_cmp(const void *oid1, const void *oid2)
 {
@@ -59,7 +60,7 @@ static int obj_cmp(const void *oid1, const void *oid2)
 
 static void get_store_dir(struct strbuf *buf, int epoch)
 {
-	if (!strcmp(store.name, "simple"))
+	if (!strcmp(sd_store->name, "simple"))
 		strbuf_addf(buf, "%s%08u", obj_path, epoch);
 	else /* XXX assume other store doesn't need epoch/obj pattern */
 		strbuf_addf(buf, "%s", obj_path);
@@ -138,7 +139,7 @@ int get_obj_list(const struct sd_list_req *hdr, struct sd_list_rsp *rsp, void *d
 		iocb.buf = buf;
 		iocb.length = 0;
 		iocb.epoch = i;
-		store.get_objlist(&iocb);
+		sd_store->get_objlist(&iocb);
 		nr = merge_objlist(list, nr, (uint64_t *)iocb.buf, iocb.length);
 	}
 out:
@@ -173,17 +174,17 @@ static int read_copy_from_cluster(struct request *req, uint32_t epoch,
 		if (is_myself(e[n].addr, e[n].port)) {
 			memset(&iocb, 0, sizeof(iocb));
 			iocb.epoch = epoch;
-			ret = store.open(oid, &iocb, 0);
+			ret = sd_store->open(oid, &iocb, 0);
 			if (ret != SD_RES_SUCCESS)
 				continue;
 
 			iocb.buf = buf;
 			iocb.length = SD_DATA_OBJ_SIZE;
 			iocb.offset = 0;
-			ret = store.read(oid, &iocb);
+			ret = sd_store->read(oid, &iocb);
 			if (ret != SD_RES_SUCCESS)
 				continue;
-			store.close(oid, &iocb);
+			sd_store->close(oid, &iocb);
 			goto out;
 		}
 
@@ -426,7 +427,7 @@ out:
 
 int update_epoch_store(uint32_t epoch)
 {
-	if (!strcmp(store.name, "simple")) {
+	if (!strcmp(sd_store->name, "simple")) {
 		char new[1024];
 
 		snprintf(new, sizeof(new), "%s%08u/", obj_path, epoch);
@@ -565,21 +566,21 @@ int store_read_obj(const struct sd_req *req, struct sd_rsp *rsp, void *data)
 	memset(&iocb, 0, sizeof(iocb));
 	iocb.epoch = epoch;
 	iocb.flags = hdr->flags;
-	ret = store.open(hdr->oid, &iocb, 0);
+	ret = sd_store->open(hdr->oid, &iocb, 0);
 	if (ret != SD_RES_SUCCESS)
 		return ret;
 
 	iocb.buf = request->data;
 	iocb.length = hdr->data_length;
 	iocb.offset = hdr->offset;
-	ret = store.read(hdr->oid, &iocb);
+	ret = sd_store->read(hdr->oid, &iocb);
 	if (ret != SD_RES_SUCCESS)
 		goto out;
 
 	rsps->data_length = hdr->data_length;
 	rsps->copies = sys->nr_sobjs;
 out:
-	store.close(hdr->oid, &iocb);
+	sd_store->close(hdr->oid, &iocb);
 	return ret;
 }
 
@@ -604,11 +605,11 @@ static int do_write_obj(struct siocb *iocb, struct sd_obj_req *req, uint32_t epo
 			strbuf_release(&buf);
 			return SD_RES_EIO;
 		}
-		ret = store.write(oid, iocb);
+		ret = sd_store->write(oid, iocb);
 		jrnl_end(jd);
 		strbuf_release(&buf);
 	} else
-		ret = store.write(oid, iocb);
+		ret = sd_store->write(oid, iocb);
 
 	return ret;
 }
@@ -624,13 +625,13 @@ int store_write_obj(const struct sd_req *req, struct sd_rsp *rsp, void *data)
 	memset(&iocb, 0, sizeof(iocb));
 	iocb.epoch = epoch;
 	iocb.flags = hdr->flags;
-	ret = store.open(hdr->oid, &iocb, 0);
+	ret = sd_store->open(hdr->oid, &iocb, 0);
 	if (ret != SD_RES_SUCCESS)
 		return ret;
 
 	ret = do_write_obj(&iocb, hdr, epoch, request->data);
 
-	store.close(hdr->oid, &iocb);
+	sd_store->close(hdr->oid, &iocb);
 	return ret;
 }
 
@@ -651,7 +652,7 @@ int store_create_and_write_obj(const struct sd_req *req, struct sd_rsp *rsp, voi
 	memset(&iocb, 0, sizeof(iocb));
 	iocb.epoch = epoch;
 	iocb.flags = hdr->flags;
-	ret = store.open(hdr->oid, &iocb, 1);
+	ret = sd_store->open(hdr->oid, &iocb, 1);
 	if (ret != SD_RES_SUCCESS)
 		return ret;
 	if (hdr->flags & SD_FLAG_CMD_COW) {
@@ -666,14 +667,14 @@ int store_create_and_write_obj(const struct sd_req *req, struct sd_rsp *rsp, voi
 		iocb.buf = buf;
 		iocb.length = SD_DATA_OBJ_SIZE;
 		iocb.offset = 0;
-		ret = store.write(hdr->oid, &iocb);
+		ret = sd_store->write(hdr->oid, &iocb);
 		if (ret != SD_RES_SUCCESS)
 			goto out;
 	}
 	ret = do_write_obj(&iocb, hdr, epoch, request->data);
 out:
 	free(buf);
-	store.close(hdr->oid, &iocb);
+	sd_store->close(hdr->oid, &iocb);
 	return ret;
 }
 
@@ -1228,7 +1229,7 @@ static int recover_object_from_replica(uint64_t oid,
 
 	if (is_myself(entry->addr, entry->port)) {
 		iocb.epoch = epoch;
-		ret = store.link(oid, &iocb, tgt_epoch);
+		ret = sd_store->link(oid, &iocb, tgt_epoch);
 		if (ret == SD_RES_SUCCESS) {
 			ret = 0;
 			goto done;
@@ -1277,7 +1278,7 @@ static int recover_object_from_replica(uint64_t oid,
 		iocb.epoch = epoch;
 		iocb.length = rlen;
 		iocb.buf = buf;
-		ret = store.atomic_put(oid, &iocb);
+		ret = sd_store->atomic_put(oid, &iocb);
 		if (ret!= SD_RES_SUCCESS) {
 			ret = -1;
 			goto out;
@@ -1410,9 +1411,9 @@ static void recover_object(struct work *work)
 	eprintf("done:%"PRIu32" count:%"PRIu32", oid:%"PRIx64"\n", rw->done, rw->count, oid);
 
 	iocb.epoch = epoch;
-	ret = store.open(oid, &iocb, 0);
+	ret = sd_store->open(oid, &iocb, 0);
 	if (ret == SD_RES_SUCCESS) {
-		store.close(oid, &iocb);
+		sd_store->close(oid, &iocb);
 		dprintf("the object is already recovered\n");
 		return;
 	}
@@ -1494,10 +1495,10 @@ int is_recoverying_oid(uint64_t oid)
 
 	memset(&iocb, 0, sizeof(iocb));
 	iocb.epoch = sys->epoch;
-	ret = store.open(oid, &iocb, 0);
+	ret = sd_store->open(oid, &iocb, 0);
 	if (ret == SD_RES_SUCCESS) {
 		dprintf("the object %" PRIx64 " is already recoverd\n", oid);
-		store.close(oid, &iocb);
+		sd_store->close(oid, &iocb);
 		return 0;
 	}
 
@@ -1993,6 +1994,7 @@ static int init_config_path(const char *base_path)
 int init_store(const char *d)
 {
 	int ret;
+	char *driver_name;
 
 	ret = init_obj_path(d);
 	if (ret)
@@ -2014,10 +2016,15 @@ int init_store(const char *d)
 	if (ret)
 		return ret;
 
-	ret = store.init(obj_path);
-	if (ret)
-		return ret;
+	driver_name = (char *)store_file_read();
+	if (driver_name)
+		sd_store = find_store_driver(driver_name);
 
+	if (sd_store) {
+		ret = sd_store->init(obj_path);
+		if (ret != SD_RES_SUCCESS)
+			return ret;
+	}
 	return ret;
 }
 
@@ -2133,4 +2140,60 @@ int get_cluster_flags(uint16_t *flags)
 	close(fd);
 out:
 	return ret;
+}
+
+void *store_file_read(void)
+{
+	struct strbuf buf = STRBUF_INIT;
+	struct stat st;
+	void *buffer = NULL;
+	int len, fd;
+
+	strbuf_addf(&buf, "%s%s", obj_path, ".store");
+
+	fd = open(buf.buf, O_RDONLY);
+	if (fd < 0) {
+		dprintf("not found .store file\n");
+		goto out;
+	}
+	if (fstat(fd, &st) < 0) {
+		dprintf("%m\n");
+		goto out_close;
+	}
+
+	len = st.st_size;
+	buffer = xmalloc(len);
+	len = xread(fd, buffer, len);
+	if (len != st.st_size) {
+		free(buffer);
+		buffer = NULL;
+		goto out_close;
+	}
+out_close:
+	close(fd);
+out:
+	strbuf_release(&buf);
+	return buffer;
+}
+
+int store_file_write(void *buffer, size_t len)
+{
+        int fd, ret = -1;
+        struct strbuf buf = STRBUF_INIT;
+
+	strbuf_addf(&buf, "%s%s", obj_path, ".store");
+        fd = open(buf.buf, O_WRONLY | O_TRUNC | O_CREAT, def_fmode);
+        if (fd < 0) {
+                dprintf("%m\n");
+                goto out;
+        }
+
+        ret = xwrite(fd, buffer, len);
+        if (ret != len)
+                ret = -1;
+
+        close(fd);
+out:
+        strbuf_release(&buf);
+        return ret;
 }

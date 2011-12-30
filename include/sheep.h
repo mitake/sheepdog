@@ -27,7 +27,7 @@
 #define SD_MAX_VNODES 65536
 #define SD_MAX_VMS   4096 /* FIXME: should be removed */
 
-#define SD_OP_SHEEP         0x80
+#define SD_OP_SHEEP          0x80
 #define SD_OP_DEL_VDI        0x81
 #define SD_OP_GET_NODE_LIST  0x82
 #define SD_OP_GET_VM_LIST    0x83
@@ -37,7 +37,8 @@
 #define SD_OP_STAT_CLUSTER   0x87
 #define SD_OP_KILL_NODE      0x88
 #define SD_OP_GET_VDI_ATTR   0x89
-#define SD_OP_RECOVER	     0x8A
+#define SD_OP_RECOVER        0x8a
+#define SD_OP_GET_STORE_LIST 0x90
 
 #define SD_FLAG_CMD_IO_LOCAL   0x0010
 #define SD_FLAG_CMD_RECOVERY 0x0020
@@ -72,7 +73,8 @@ struct sd_so_req {
 	uint64_t	ctime;
 	uint32_t	copies;
 	uint32_t	tag;
-	uint32_t	opcode_specific[2];
+	uint8_t		index;
+	uint8_t		opcode_specific[7];
 };
 
 struct sd_so_rsp {
@@ -263,6 +265,7 @@ static inline const char *sd_strerror(int err)
 		{SD_RES_JOIN_FAILED, "Node has failed to join cluster"},
 		{SD_RES_HALT, "IO has halted as there are too few living nodes"},
 		{SD_RES_MANUAL_RECOVER, "Cluster is running/halted and cannot be manually recovered"},
+		{SD_RES_NO_STORE, "Targeted backend store is not found"},
 
 		{SD_RES_OLD_NODE_VER, "Remote node has an old epoch"},
 		{SD_RES_NEW_NODE_VER, "Remote node has a new epoch"},

@@ -1862,7 +1862,14 @@ int init_base_path(const char *d)
 
 static int init_obj_path(const char *base_path)
 {
-	int new;
+	int new, len;
+
+	len = strlen(base_path);
+	/* farm needs extra 43 chars to store snapshot objects */
+	if (len + 43 > PATH_MAX) {
+		eprintf("insanely long object directory %s", base_path);
+		return -1;
+	}
 
 	obj_path = zalloc(strlen(base_path) + strlen(OBJ_PATH) + 1);
 	sprintf(obj_path, "%s" OBJ_PATH, base_path);

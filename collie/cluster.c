@@ -34,6 +34,8 @@ static int get_store_index(char *name)
 	int ret = -1;
 	if (!strlen(name) || strcmp(name, "simple") == 0)
 		ret = 0;
+	if (strcmp(name, "farm") == 0)
+		ret = 1;
 	return ret;
 }
 

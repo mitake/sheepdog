@@ -202,6 +202,7 @@ static inline const char *index_to_name(int idx)
 {
         static const char *stores[] = {
 		[0] = "simple",
+		[1] = "farm",
 	};
 
 	if (idx < 0 || idx >= ARRAY_SIZE(stores))

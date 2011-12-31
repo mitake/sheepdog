@@ -48,6 +48,11 @@ struct trunk_entry_incore {
 };
 
 extern char *epoch_path;
+extern char *obj_path;
+
+/* farm.c */
+extern char farm_dir[PATH_MAX];
+extern char farm_obj_dir[PATH_MAX];
 
 /* sha1_file.c */
 extern char *sha1_to_path(const unsigned char *sha1);

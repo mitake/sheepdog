@@ -568,8 +568,13 @@ static void update_cluster_info(struct join_message *msg,
 
 	if (!sd_store && strlen((char *)msg->store)) {
 		sd_store = find_store_driver((char *)msg->store);
-		if (sd_store)
+		if (sd_store) {
+			const char *name = sd_store->name;
 			sd_store->init(obj_path);
+			if (store_file_write((void *)name, strlen(name) + 1) < 0)
+				panic("failed to write store file\n");
+		} else
+				panic("backend store %s not supported\n", msg->store);
 	}
 
 join_finished:

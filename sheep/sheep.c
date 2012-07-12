@@ -252,8 +252,9 @@ int main(int argc, char **argv)
 	sys->recovery_wqueue = init_work_queue("recovery", true);
 	sys->deletion_wqueue = init_work_queue("deletion", true);
 	sys->block_wqueue = init_work_queue("block", true);
+	sys->net_wqueue = init_work_queue("net", false);
 	if (!sys->gateway_wqueue || !sys->io_wqueue ||!sys->recovery_wqueue ||
-	    !sys->deletion_wqueue || !sys->block_wqueue)
+	    !sys->deletion_wqueue || !sys->block_wqueue || !sys->net_wqueue)
 		exit(1);
 
 	ret = init_signal();

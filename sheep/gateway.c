@@ -286,7 +286,6 @@ static int gateway_forward_request(struct request *req)
 		}
 	}
 
-	dprintf("nr_sent %d, err %x\n", wi.nr_sent, err_ret);
 	if (wi.nr_sent > 0) {
 		ret = wait_forward_request(&wi, rsp);
 		if (ret != SD_RES_SUCCESS)

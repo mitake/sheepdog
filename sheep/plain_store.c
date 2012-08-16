@@ -21,13 +21,16 @@ static char stale_dir[PATH_MAX];
 
 static int get_open_flags(uint64_t oid, bool create)
 {
-	int flags = O_DSYNC | O_RDWR;
+	int flags = O_RDWR;
 
 	if (is_data_obj(oid))
 		flags |= O_DIRECT;
 
 	if (create)
 		flags |= O_CREAT | O_TRUNC;
+
+	if (!sys->store_writeback)
+		flags |= O_DSYNC;
 
 	return flags;
 }

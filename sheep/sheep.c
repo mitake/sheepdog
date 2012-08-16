@@ -52,10 +52,11 @@ static struct option const long_options[] = {
 	{"enable-cache", required_argument, NULL, 'w'},
 	{"zone", required_argument, NULL, 'z'},
 	{"pidfile", required_argument, NULL, 'P'},
+	{"writeback", no_argument, NULL, 'W'},
 	{NULL, 0, NULL, 0},
 };
 
-static const char *short_options = "c:dDfghl:op:P:s:w:y:z:";
+static const char *short_options = "c:dDfghl:op:P:s:w:y:z:W";
 
 static void usage(int status)
 {
@@ -81,6 +82,7 @@ Options:\n\
   -w, --enable-cache      enable object cache and specify the max size (M) and mode\n\
   -y, --myaddr            specify the address advertised to other sheep\n\
   -z, --zone              specify the zone id\n\
+  -W, --writeback         use writeback semantics in backend store\n\
 ", PACKAGE_VERSION, program_name);
 	exit(status);
 }
@@ -311,6 +313,9 @@ int main(int argc, char **argv)
 			}
 
 			sys->cdrv_option = get_cdrv_option(sys->cdrv, optarg);
+			break;
+		case 'W':
+			sys->store_writeback = 1;
 			break;
 		case 'h':
 			usage(0);

@@ -119,6 +119,8 @@ struct cluster_info {
 	struct work_queue *block_wqueue;
 	struct work_queue *sockfd_wqueue;
 	struct work_queue *reclaim_wqueue;
+
+	int store_writeback;
 };
 
 struct siocb {
@@ -343,6 +345,11 @@ static inline int vnode_is_local(struct sd_vnode *v)
 	return is_myself(v->nid.addr, v->nid.port);
 }
 
+static inline int node_is_local(struct sd_node *n)
+{
+	return is_myself(n->nid.addr, n->nid.port);
+}
+
 /* gateway operations */
 int gateway_read_obj(struct request *req);
 int gateway_write_obj(struct request *req);
@@ -354,6 +361,7 @@ int peer_read_obj(struct request *req);
 int peer_write_obj(struct request *req);
 int peer_create_and_write_obj(struct request *req);
 int peer_remove_obj(struct request *req);
+int peer_flush(struct request *req);
 
 /* object_cache */
 
@@ -385,5 +393,7 @@ void sockfd_cache_add_group(struct sd_node *nodes, int nr);
 struct sockfd *sheep_get_sockfd(struct node_id *);
 void sheep_put_sockfd(struct node_id *, struct sockfd *);
 void sheep_del_sockfd(struct node_id *, struct sockfd *);
+
+int _peer_flush(void);
 
 #endif

@@ -433,6 +433,9 @@ int default_flush(void)
 {
 	int fd;
 
+	if (sys->gateway_only)
+		return SD_RES_SUCCESS;
+
 	fd = open(obj_path, O_RDONLY);
 	if (fd < 0) {
 		eprintf("error at open() %s, %s\n", obj_path, strerror(errno));

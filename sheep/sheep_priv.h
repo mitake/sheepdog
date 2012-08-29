@@ -356,6 +356,7 @@ int gateway_read_obj(struct request *req);
 int gateway_write_obj(struct request *req);
 int gateway_create_and_write_obj(struct request *req);
 int gateway_remove_obj(struct request *req);
+int gateway_sync_vdi(struct request *req);
 
 /* backend store */
 int peer_read_obj(struct request *req);

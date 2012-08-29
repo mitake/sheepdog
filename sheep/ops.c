@@ -23,14 +23,6 @@
 #include <pthread.h>
 #include <sys/epoll.h>
 
-#ifndef HAVE_SYNCFS
-static int syncfs(int fd)
-{
-	sync();
-	return 0;
-}
-#endif
-
 #include "sheep_priv.h"
 #include "strbuf.h"
 #include "trace/trace.h"
@@ -683,7 +675,6 @@ static int flush_all_node(struct request *req)
 		s = &vinfo->nodes[i];
 
 		if (node_is_local(s)) {
-			_peer_flush();
 			continue;
 		}
 
@@ -760,7 +751,7 @@ static int local_flush_vdi(struct request *req)
 	}
 
 	if (sys->store_writeback)
-		return flush_all_node(req);
+		return gateway_forward_request(req, 1);
 
 	return ret;
 }
@@ -1017,29 +1008,9 @@ out:
 	return ret;
 }
 
-int _peer_flush(void)
-{
-	int fd;
-
-	fd = open(obj_path, O_RDONLY);
-	if (fd < 0) {
-		eprintf("error at open() %s, %s\n", obj_path, strerror(errno));
-		return SD_RES_NO_OBJ;
-	}
-
-	if (syncfs(fd)) {
-		eprintf("error at syncfs(), %s\n", strerror(errno));
-		return SD_RES_EIO;
-	}
-
-	close(fd);
-
-	return SD_RES_SUCCESS;
-}
-
 int peer_flush(struct request *req)
 {
-	return _peer_flush();
+	return sd_store->flush();
 }
 
 static struct sd_op_template sd_ops[] = {

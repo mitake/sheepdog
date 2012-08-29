@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <pthread.h>
 #include <sys/epoll.h>
+<<<<<<< HEAD
 
 #ifndef HAVE_SYNCFS
 static int syncfs(int fd)
@@ -30,6 +31,8 @@ static int syncfs(int fd)
 	return 0;
 }
 #endif
+=======
+>>>>>>> 93c5e7a39dd721b4a2ee1afd890f38f2129c6d10
 
 #include "sheep_priv.h"
 #include "strbuf.h"
@@ -683,7 +686,10 @@ static int flush_all_node(struct request *req)
 		s = &vinfo->nodes[i];
 
 		if (node_is_local(s)) {
+<<<<<<< HEAD
 			_peer_flush();
+=======
+>>>>>>> 93c5e7a39dd721b4a2ee1afd890f38f2129c6d10
 			continue;
 		}
 
@@ -760,7 +766,11 @@ static int local_flush_vdi(struct request *req)
 	}
 
 	if (sys->store_writeback)
+<<<<<<< HEAD
 		return flush_all_node(req);
+=======
+		return gateway_forward_request(req, 1);
+>>>>>>> 93c5e7a39dd721b4a2ee1afd890f38f2129c6d10
 
 	return ret;
 }
@@ -1017,6 +1027,7 @@ out:
 	return ret;
 }
 
+<<<<<<< HEAD
 int _peer_flush(void)
 {
 	int fd;
@@ -1040,6 +1051,11 @@ int _peer_flush(void)
 int peer_flush(struct request *req)
 {
 	return _peer_flush();
+=======
+int peer_flush(struct request *req)
+{
+	return sd_store->flush();
+>>>>>>> 93c5e7a39dd721b4a2ee1afd890f38f2129c6d10
 }
 
 static struct sd_op_template sd_ops[] = {

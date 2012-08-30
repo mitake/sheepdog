@@ -238,7 +238,7 @@ int gateway_forward_request(struct request *req, int all_node)
 	struct write_info wi;
 	struct sd_op_template *op;
 	struct sd_req hdr;
-	struct vnode_info *vinfo;
+	struct vnode_info *vinfo = NULL;
 
 	dprintf("%"PRIx64"\n", oid);
 
@@ -333,3 +333,9 @@ int gateway_remove_obj(struct request *req)
 {
 	return gateway_forward_request(req, 0);
 }
+
+int gateway_sync_vdi(struct request *req)
+{
+	return gateway_forward_request(req, 1);
+}
+

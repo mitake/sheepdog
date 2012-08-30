@@ -750,8 +750,12 @@ static int local_flush_vdi(struct request *req)
 			return ret;
 	}
 
-	if (sys->store_writeback)
-		return gateway_forward_request(req, 1);
+	if (sys->store_writeback) {
+		struct sd_req hdr;
+
+		sd_init_req(&hdr, SD_OP_SYNC_VDI);
+		return exec_local_req(&hdr, NULL);
+	}
 
 	return ret;
 }
@@ -1280,6 +1284,11 @@ static struct sd_op_template sd_ops[] = {
 		.process_main = local_info_recover,
 	},
 
+	[SD_OP_SYNC_VDI] = {
+		.name = "SYNC_VDI",
+		.type = SD_OP_TYPE_GATEWAY,
+		.process_work = gateway_sync_vdi,
+	},
 	[SD_OP_FLUSH_PEER] = {
 		.name = "FLUSH_PEER",
 		.type = SD_OP_TYPE_PEER,
@@ -1370,7 +1379,7 @@ static int map_table[] = {
 	[SD_OP_READ_OBJ] = SD_OP_READ_PEER,
 	[SD_OP_WRITE_OBJ] = SD_OP_WRITE_PEER,
 	[SD_OP_REMOVE_OBJ] = SD_OP_REMOVE_PEER,
-	[SD_OP_FLUSH_VDI] = SD_OP_FLUSH_PEER,
+	[SD_OP_SYNC_VDI] = SD_OP_FLUSH_PEER,
 };
 
 int gateway_to_peer_opcode(int opcode)

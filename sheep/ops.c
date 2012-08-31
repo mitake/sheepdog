@@ -23,14 +23,6 @@
 #include <pthread.h>
 #include <sys/epoll.h>
 
-#ifndef HAVE_SYNCFS
-static int syncfs(int fd)
-{
-	sync();
-	return 0;
-}
-#endif
-
 #include "sheep_priv.h"
 #include "strbuf.h"
 #include "trace/trace.h"
@@ -654,101 +646,6 @@ static int local_get_snap_file(struct request *req)
 	return ret;
 }
 
-static int flush_all_node(struct request *req)
-{
-	int i, ret, err_ret, epfd, waiting, cnt;
-	struct sd_node *s;
-	struct node_id *node_sent[SD_MAX_NODES];
-	struct sockfd *sfd, *sfd_sent[SD_MAX_NODES];
-	struct sd_req hdr;
-	struct vnode_info *vinfo = req->vinfo;
-	struct epoll_event ev;
-
-	err_ret = SD_RES_SUCCESS;
-
-	epfd = epoll_create(SD_MAX_NODES);
-	if (epfd == -1) {
-		eprintf("failed to create epoll file descriptor");
-		return SD_RES_EIO;
-	}
-
-	sd_init_req(&hdr, SD_OP_FLUSH_PEER);
-
-	bzero(&ev, sizeof(struct epoll_event));
-	ev.events = EPOLLIN;
-
-	for (waiting = 0, i = 0; i < vinfo->nr_nodes; i++) {
-		unsigned int wlen = 0;
-
-		s = &vinfo->nodes[i];
-
-		if (node_is_local(s)) {
-			_peer_flush();
-			continue;
-		}
-
-		sfd = sheep_get_sockfd(&s->nid);
-		if (!sfd) {
-			err_ret = SD_RES_NETWORK_ERROR;
-			goto put_sockfd;
-		}
-
-		node_sent[waiting] = &s->nid;
-		sfd_sent[waiting] = sfd;
-
-		ret = send_req(sfd->fd, &hdr, NULL, &wlen);
-		if (ret) {
-			eprintf("failed at send_req()");
-			sheep_del_sockfd(&s->nid, sfd);
-			err_ret = SD_RES_NETWORK_ERROR;
-			goto put_sockfd;
-		}
-
-		ev.data.fd = sfd->fd;
-		if (epoll_ctl(epfd, EPOLL_CTL_ADD, sfd->fd, &ev) == -1) {
-			eprintf("failed at epoll_ctl(), errno: %s", strerror(errno));
-			err_ret = SD_RES_EIO;
-			goto put_sockfd;
-		}
-
-		waiting++;
-	}
-
-	cnt = waiting;
-	while (cnt) {
-		struct epoll_event ev_nodes[SD_MAX_NODES];
-
-		bzero(ev_nodes, sizeof(struct epoll_event) * cnt);
-
-		ret = epoll_wait(epfd, ev_nodes, cnt, -1);
-		if (ret == -1) {
-			eprintf("failed at epoll_wait(), errno: %s", strerror(errno));
-			err_ret = SD_RES_EIO;
-			break;
-		}
-
-		cnt -= ret;
-
-		for (i = 0; i < ret; i++) {
-			struct sd_rsp rsp;
-
-			if (do_read(ev_nodes[i].data.fd, &rsp, sizeof(struct sd_rsp))) {
-				eprintf("failed to receive response from node");
-				err_ret = SD_RES_NETWORK_ERROR;
-				goto put_sockfd;
-			}
-		}
-	}
-
-put_sockfd:
-	for (i = 0; i < waiting; i++)
-		sheep_put_sockfd(node_sent[i], sfd_sent[i]);
-
-	close(epfd);
-
-	return err_ret;
-}
-
 static int local_flush_vdi(struct request *req)
 {
 	int ret = SD_RES_SUCCESS;
@@ -759,8 +656,12 @@ static int local_flush_vdi(struct request *req)
 			return ret;
 	}
 
-	if (sys->store_writeback)
-		return flush_all_node(req);
+	if (sys->store_writeback) {
+		struct sd_req hdr;
+
+		sd_init_req(&hdr, SD_OP_SYNC_VDI);
+		return exec_local_req(&hdr, NULL);
+	}
 
 	return ret;
 }
@@ -1017,29 +918,9 @@ out:
 	return ret;
 }
 
-int _peer_flush(void)
-{
-	int fd;
-
-	fd = open(obj_path, O_RDONLY);
-	if (fd < 0) {
-		eprintf("error at open() %s, %s\n", obj_path, strerror(errno));
-		return SD_RES_NO_OBJ;
-	}
-
-	if (syncfs(fd)) {
-		eprintf("error at syncfs(), %s\n", strerror(errno));
-		return SD_RES_EIO;
-	}
-
-	close(fd);
-
-	return SD_RES_SUCCESS;
-}
-
 int peer_flush(struct request *req)
 {
-	return _peer_flush();
+	return sd_store->flush();
 }
 
 static struct sd_op_template sd_ops[] = {
@@ -1309,6 +1190,11 @@ static struct sd_op_template sd_ops[] = {
 		.process_main = local_info_recover,
 	},
 
+	[SD_OP_SYNC_VDI] = {
+		.name = "SYNC_VDI",
+		.type = SD_OP_TYPE_GATEWAY,
+		.process_work = gateway_sync_vdi,
+	},
 	[SD_OP_FLUSH_PEER] = {
 		.name = "FLUSH_PEER",
 		.type = SD_OP_TYPE_PEER,
@@ -1399,7 +1285,7 @@ static int map_table[] = {
 	[SD_OP_READ_OBJ] = SD_OP_READ_PEER,
 	[SD_OP_WRITE_OBJ] = SD_OP_WRITE_PEER,
 	[SD_OP_REMOVE_OBJ] = SD_OP_REMOVE_PEER,
-	[SD_OP_FLUSH_VDI] = SD_OP_FLUSH_PEER,
+	[SD_OP_SYNC_VDI] = SD_OP_FLUSH_PEER,
 };
 
 int gateway_to_peer_opcode(int opcode)

@@ -424,6 +424,37 @@ int default_purge_obj(void)
 	return for_each_object_in_wd(move_object_to_stale_dir, &tgt_epoch);
 }
 
+#ifndef HAVE_SYNCFS
+static int syncfs(int fd)
+{
+	sync();
+	return 0;
+}
+#endif
+
+int default_flush(void)
+{
+	int fd;
+
+	if (sys->gateway_only)
+		return SD_RES_SUCCESS;
+
+	fd = open(obj_path, O_RDONLY);
+	if (fd < 0) {
+		eprintf("error at open() %s, %s\n", obj_path, strerror(errno));
+		return SD_RES_NO_OBJ;
+	}
+
+	if (syncfs(fd)) {
+		eprintf("error at syncfs(), %s\n", strerror(errno));
+		return SD_RES_EIO;
+	}
+
+	close(fd);
+
+	return SD_RES_SUCCESS;
+}
+
 struct store_driver plain_store = {
 	.name = "plain",
 	.init = default_init,
@@ -437,6 +468,7 @@ struct store_driver plain_store = {
 	.format = default_format,
 	.remove_object = default_remove_object,
 	.purge_obj = default_purge_obj,
+	.flush = default_flush,
 };
 
 add_store_driver(plain_store);

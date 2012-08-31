@@ -157,6 +157,7 @@ struct store_driver {
 	int (*cleanup)(void);
 	int (*restore)(struct siocb *);
 	int (*get_snap_file)(struct siocb *);
+	int (*flush)(void);
 };
 
 int default_init(char *p);
@@ -358,6 +359,7 @@ int peer_read_obj(struct request *req);
 int peer_write_obj(struct request *req);
 int peer_create_and_write_obj(struct request *req);
 int peer_remove_obj(struct request *req);
+int default_flush(void);
 
 /* object_cache */
 

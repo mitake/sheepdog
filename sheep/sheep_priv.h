@@ -159,6 +159,7 @@ struct store_driver {
 	int (*cleanup)(void);
 	int (*restore)(struct siocb *);
 	int (*get_snap_file)(struct siocb *);
+	int (*flush)(void);
 };
 
 int default_init(char *p);
@@ -173,6 +174,7 @@ int default_format(char *name);
 int default_remove_object(uint64_t oid);
 int default_purge_obj(void);
 int for_each_object_in_wd(int (*func)(uint64_t oid, void *arg), void *arg);
+int default_flush(void);
 
 extern struct list_head store_drivers;
 #define add_store_driver(driver)                                 \
@@ -392,7 +394,5 @@ void sockfd_cache_add_group(struct sd_node *nodes, int nr);
 struct sockfd *sheep_get_sockfd(struct node_id *);
 void sheep_put_sockfd(struct node_id *, struct sockfd *);
 void sheep_del_sockfd(struct node_id *, struct sockfd *);
-
-int _peer_flush(void);
 
 #endif

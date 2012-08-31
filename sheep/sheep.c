@@ -49,9 +49,9 @@ static struct option const long_options[] = {
 	{"stdout", no_argument, NULL, 'o'},
 	{"port", required_argument, NULL, 'p'},
 	{"disk-space", required_argument, NULL, 's'},
-	{"enable-cache", required_argument, NULL, 'w'},
 	{"zone", required_argument, NULL, 'z'},
 	{"pidfile", required_argument, NULL, 'P'},
+	{"cache", required_argument, NULL, 'w'},
 	{NULL, 0, NULL, 0},
 };
 
@@ -78,9 +78,9 @@ Options:\n\
   -p, --port              specify the TCP port on which to listen\n\
   -P, --pidfile           create a pid file\n\
   -s, --disk-space        specify the free disk space in megabytes\n\
-  -w, --enable-cache      enable object cache and specify the max size (M) and mode\n\
   -y, --myaddr            specify the address advertised to other sheep\n\
   -z, --zone              specify the zone id\n\
+  -w, --cache             specify the cache type\n\
 ", PACKAGE_VERSION, program_name);
 	exit(status);
 }
@@ -178,6 +178,77 @@ static int init_signal(void)
 static struct cluster_info __sys;
 struct cluster_info *sys = &__sys;
 
+static void object_cb(char *s)
+{
+	const char *header = "object:";
+	int len = strlen(header);
+	char *size, *p;
+	int64_t cache_size;
+
+	if (strncmp(s, header, len))
+		goto err;
+
+	size = s + len;
+	cache_size = strtol(size, &p, 10);
+	if (size == p || cache_size < 0 || UINT64_MAX < cache_size)
+		goto err;
+
+	sys->enable_write_cache = 1;
+	sys->cache_size = cache_size * 1024 * 1024;
+
+	return;
+err:
+	fprintf(stderr, "Invalid object cache option '%s': "
+		"size must be an integer between 0 and %lu\n",
+		s, UINT64_MAX);
+	exit(1);
+}
+
+static void disk_cb(char *s)
+{
+	if (strcmp(s, "disk")) {
+		fprintf(stderr, "invalid disk cache option: %s\n", s);
+		exit(1);
+	}
+
+	sys->store_writeback = 1;
+}
+
+static void do_cache_mode(char *s)
+{
+	int i;
+	struct cache_mode {
+		const char *name;
+		void (*cb)(char *);
+	};
+
+	struct cache_mode cache_mode_array[] = {
+		{ "object", object_cb },
+		{ "disk", disk_cb },
+		{ NULL, NULL },
+	};
+
+	for (i = 0; cache_mode_array[i].name; i++) {
+		const char *n = cache_mode_array[i].name;
+
+		if (!strncmp(s, n, strlen(n))) {
+			cache_mode_array[i].cb(s);
+			return;
+		}
+	}
+
+	fprintf(stderr, "invalid cache mode: %s\n", s);
+	exit(1);
+}
+
+static void init_cache_mode(char *mode)
+{
+	char *s = strtok(mode, ",");
+	do {
+		do_cache_mode(s);
+	} while ((s = strtok(NULL, ",")));
+}
+
 int main(int argc, char **argv)
 {
 	int ch, longindex;
@@ -188,14 +259,12 @@ int main(int argc, char **argv)
 	int log_level = SDOG_INFO;
 	char path[PATH_MAX];
 	int64_t zone = -1;
-	int64_t cache_size = 0;
 	int64_t free_space = 0;
 	int nr_vnodes = SD_DEFAULT_VNODES;
 	bool explicit_addr = false;
 	int af;
 	char *p;
 	struct cluster_driver *cdrv;
-	int enable_object_cache = 0; /* disabled by default */
 	char *pid_file = NULL;
 
 	signal(SIGPIPE, SIG_IGN);
@@ -263,21 +332,6 @@ int main(int argc, char **argv)
 			}
 			sys->this_node.zone = zone;
 			break;
-		case 'w':
-			enable_object_cache = 1;
-			cache_size = strtol(optarg, &p, 10);
-			if (optarg == p || cache_size < 0 ||
-			    UINT64_MAX < cache_size) {
-				fprintf(stderr, "Invalid cache size '%s': "
-					"must be an integer between 0 and %lu\n",
-					optarg, UINT64_MAX);
-				exit(1);
-			}
-			sys->cache_size = cache_size * 1024 * 1024;
-
-			fprintf(stdout, "enable write cache, "
-				"max cache size %" PRIu64 "M\n", cache_size);
-			break;
 		case 's':
 			free_space = strtoll(optarg, &p, 10);
 			if (optarg == p || free_space <= 0 ||
@@ -302,6 +356,9 @@ int main(int argc, char **argv)
 			}
 
 			sys->cdrv_option = get_cdrv_option(sys->cdrv, optarg);
+			break;
+		case 'w':
+			init_cache_mode(optarg);
 			break;
 		case 'h':
 			usage(0);
@@ -334,7 +391,7 @@ int main(int argc, char **argv)
 	if (ret)
 		exit(1);
 
-	ret = init_store(dir, enable_object_cache);
+	ret = init_store(dir);
 	if (ret)
 		exit(1);
 

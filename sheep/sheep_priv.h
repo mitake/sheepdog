@@ -118,6 +118,8 @@ struct cluster_info {
 	struct work_queue *block_wqueue;
 	struct work_queue *sockfd_wqueue;
 	struct work_queue *reclaim_wqueue;
+
+	int store_writeback;
 };
 
 struct siocb {
@@ -211,7 +213,7 @@ static inline uint32_t sys_epoch(void)
 
 int create_listen_port(int port, void *data);
 
-int init_store(const char *dir, int enable_write_cache);
+int init_store(const char *dir);
 int init_base_path(const char *dir);
 
 int fill_vdi_copy_list(void *data);

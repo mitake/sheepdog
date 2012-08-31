@@ -647,9 +647,22 @@ static int local_get_snap_file(struct request *req)
 
 static int local_flush_vdi(struct request *req)
 {
-	if (!sys->enable_write_cache)
-		return SD_RES_SUCCESS;
-	return object_cache_flush_vdi(req);
+	int ret = SD_RES_SUCCESS;
+
+	if (sys->enable_write_cache) {
+		ret = object_cache_flush_vdi(req);
+		if (ret != SD_RES_SUCCESS)
+			return ret;
+	}
+
+	if (sys->store_writeback) {
+		struct sd_req hdr;
+
+		sd_init_req(&hdr, SD_OP_SYNC_VDI);
+		return exec_local_req(&hdr, NULL);
+	}
+
+	return ret;
 }
 
 static int local_flush_and_del(struct request *req)
@@ -1255,6 +1268,7 @@ static int map_table[] = {
 	[SD_OP_READ_OBJ] = SD_OP_READ_PEER,
 	[SD_OP_WRITE_OBJ] = SD_OP_WRITE_PEER,
 	[SD_OP_REMOVE_OBJ] = SD_OP_REMOVE_PEER,
+	[SD_OP_SYNC_VDI] = SD_OP_FLUSH_PEER,
 };
 
 int gateway_to_peer_opcode(int opcode)

@@ -917,6 +917,11 @@ out:
 	return ret;
 }
 
+int peer_flush(struct request *req)
+{
+	return sd_store->flush();
+}
+
 static struct sd_op_template sd_ops[] = {
 
 	/* cluster operations */
@@ -1182,6 +1187,17 @@ static struct sd_op_template sd_ops[] = {
 		.name = "INFO_RECOVER",
 		.type = SD_OP_TYPE_LOCAL,
 		.process_main = local_info_recover,
+	},
+
+	[SD_OP_FLUSH_PEER] = {
+		.name = "FLUSH_PEER",
+		.type = SD_OP_TYPE_PEER,
+		.process_work = peer_flush,
+	},
+	[SD_OP_SYNC_VDI] = {
+		.name = "SYNC_VDI",
+		.type = SD_OP_TYPE_GATEWAY,
+		.process_work = gateway_sync_vdi,
 	},
 };
 

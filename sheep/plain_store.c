@@ -128,6 +128,8 @@ int default_write(uint64_t oid, struct siocb *iocb, int create)
 	}
 
 	get_obj_path(oid, path);
+	if (iocb->flags & SD_FLAG_CMD_CACHE && sys->store_writeback)
+		flags &= ~O_DSYNC;
 	fd = open(path, flags, def_fmode);
 	if (fd < 0)
 		return err_to_sderr(oid, errno);

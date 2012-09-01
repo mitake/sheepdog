@@ -480,7 +480,7 @@ out:
 	return ret;
 }
 
-int init_store(const char *d, int enable_write_cache)
+int init_store(const char *d)
 {
 	int ret;
 
@@ -514,8 +514,7 @@ int init_store(const char *d, int enable_write_cache)
 			return ret;
 	}
 
-	if (enable_write_cache) {
-		sys->enable_write_cache = 1;
+	if (sys->enable_write_cache) {
 		ret = object_cache_init(d);
 		if (ret)
 			return 1;

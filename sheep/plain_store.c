@@ -130,6 +130,8 @@ int default_write(uint64_t oid, struct siocb *iocb, int create)
 	}
 
 	get_obj_path(oid, path);
+	if (iocb->flags & SD_FLAG_CMD_CACHE && sys->store_writeback)
+		flags &= ~O_DSYNC;
 	fd = open(path, flags, def_fmode);
 	if (fd < 0)
 		return err_to_sderr(oid, errno);
@@ -435,9 +437,6 @@ static int syncfs(int fd)
 int default_flush(void)
 {
 	int fd;
-
-	if (sys->gateway_only)
-		return SD_RES_SUCCESS;
 
 	fd = open(obj_path, O_RDONLY);
 	if (fd < 0) {

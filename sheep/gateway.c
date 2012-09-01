@@ -352,3 +352,8 @@ int gateway_sync_vdi(struct request *req)
 {
 	return gateway_forward_request(req, true);
 }
+
+int gateway_sync_vdi(struct request *req)
+{
+	return gateway_forward_request(req, 1);
+}

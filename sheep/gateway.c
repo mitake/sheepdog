@@ -347,3 +347,8 @@ int gateway_remove_obj(struct request *req)
 {
 	return gateway_forward_request(req, 0);
 }
+
+int gateway_sync_vdi(struct request *req)
+{
+	return gateway_forward_request(req, 1);
+}

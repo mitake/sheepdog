@@ -178,7 +178,7 @@ static int init_signal(void)
 static struct cluster_info __sys;
 struct cluster_info *sys = &__sys;
 
-static void object_cb(char *s)
+static void object_cache_set(char *s)
 {
 	const char *header = "object:";
 	int len = strlen(header);
@@ -204,7 +204,7 @@ err:
 	exit(1);
 }
 
-static void disk_cb(char *s)
+static void disk_cache_set(char *s)
 {
 	if (strcmp(s, "disk")) {
 		fprintf(stderr, "invalid disk cache option: %s\n", s);
@@ -219,12 +219,12 @@ static void do_cache_mode(char *s)
 	int i;
 	struct cache_mode {
 		const char *name;
-		void (*cb)(char *);
+		void (*set)(char *);
 	};
 
 	struct cache_mode cache_mode_array[] = {
-		{ "object", object_cb },
-		{ "disk", disk_cb },
+		{ "object", object_cache_set },
+		{ "disk", disk_cache_set },
 		{ NULL, NULL },
 	};
 
@@ -232,7 +232,7 @@ static void do_cache_mode(char *s)
 		const char *n = cache_mode_array[i].name;
 
 		if (!strncmp(s, n, strlen(n))) {
-			cache_mode_array[i].cb(s);
+			cache_mode_array[i].set(s);
 			return;
 		}
 	}

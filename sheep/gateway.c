@@ -239,19 +239,37 @@ static inline void gateway_init_fwd_hdr(struct sd_req *fwd, struct sd_req *hdr)
 	fwd->proto_ver = SD_SHEEP_PROTO_VER;
 }
 
-static int gateway_forward_request(struct request *req, int all_node)
+static int init_target_nodes(struct request *req, bool all_node,
+			uint64_t oid, struct sd_node **target_nodes)
+{
+	int i, nr_to_send;
+	struct vnode_info *vinfo = req->vinfo;
+
+	if (all_node) {
+		nr_to_send = vinfo->nr_nodes;
+		for (i = 0; i < nr_to_send; i++)
+			target_nodes[i] = &vinfo->nodes[i];
+
+		return nr_to_send;
+	}
+
+	nr_to_send = get_req_copy_number(req);
+	oid_to_nodes(vinfo->vnodes, vinfo->nr_vnodes, oid, nr_to_send,
+		vinfo->nodes, target_nodes);
+
+	return nr_to_send;
+}
+
+static int gateway_forward_request(struct request *req, bool all_node)
 {
 	int i, err_ret = SD_RES_SUCCESS, ret, local = -1;
 	unsigned wlen;
-	struct sd_vnode *v;
-	struct sd_node *n;
-	struct sd_vnode *obj_vnodes[SD_MAX_COPIES];
 	uint64_t oid = req->rq.obj.oid;
-	int nr_send;
+	int nr_to_send;
 	struct write_info wi;
 	struct sd_op_template *op;
 	struct sd_req hdr;
-	struct vnode_info *vinfo = NULL;
+	struct sd_node *target_nodes[SD_MAX_COPIES];
 
 	dprintf("%"PRIx64"\n", oid);
 
@@ -260,37 +278,18 @@ static int gateway_forward_request(struct request *req, int all_node)
 
 	write_info_init(&wi);
 	wlen = hdr.data_length;
-	if (all_node) {
-		vinfo = req->vinfo;
-		nr_send = vinfo->nr_nodes;
-	} else {
-		nr_send = get_req_copy_number(req);
-		oid_to_vnodes(req->vinfo->vnodes, req->vinfo->nr_vnodes,
-			oid, nr_send, obj_vnodes);
-	}
+	nr_to_send = init_target_nodes(req, all_node, oid, target_nodes);
 
-	for (i = 0; i < nr_send; i++) {
+	for (i = 0; i < nr_to_send; i++) {
 		struct sockfd *sfd;
 		struct node_id *nid;
 
-		if (all_node) {
-			n = &vinfo->nodes[i];
-			if (node_is_local(n)) {
-				local = i;
-				continue;
-			}
-
-			nid = &n->nid;
-		} else {
-			v = obj_vnodes[i];
-			if (vnode_is_local(v)) {
-				local = i;
-				continue;
-			}
-
-			nid = &v->nid;
+		if (node_is_local(target_nodes[i])) {
+			local = i;
+			continue;
 		}
 
+		nid = &target_nodes[i]->nid;
 		sfd = sheep_get_sockfd(nid);
 		if (!sfd) {
 			err_ret = SD_RES_NETWORK_ERROR;
@@ -332,7 +331,7 @@ int gateway_write_obj(struct request *req)
 	if (sys->enable_write_cache && !req->local && !bypass_object_cache(req))
 		return object_cache_handle_request(req);
 
-	return gateway_forward_request(req, 0);
+	return gateway_forward_request(req, false);
 }
 
 int gateway_create_and_write_obj(struct request *req)
@@ -340,15 +339,15 @@ int gateway_create_and_write_obj(struct request *req)
 	if (sys->enable_write_cache && !req->local && !bypass_object_cache(req))
 		return object_cache_handle_request(req);
 
-	return gateway_forward_request(req, 0);
+	return gateway_forward_request(req, false);
 }
 
 int gateway_remove_obj(struct request *req)
 {
-	return gateway_forward_request(req, 0);
+	return gateway_forward_request(req, false);
 }
 
 int gateway_sync_vdi(struct request *req)
 {
-	return gateway_forward_request(req, 1);
+	return gateway_forward_request(req, true);
 }

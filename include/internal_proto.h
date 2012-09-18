@@ -18,6 +18,7 @@
  */
 
 #include <stdint.h>
+#include "sheepdog_proto.h"
 
 #define SD_SHEEP_PROTO_VER 0x06
 

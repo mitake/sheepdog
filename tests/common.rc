@@ -175,7 +175,7 @@ _valgrind_sheep()
             echo \"core dumped ($1/core)\"; kill \$PPID"
     opts="--db-attach=yes --db-command='${db_cmd}' --suppressions=valgrind.supp"
 
-    sh -c "echo y | valgrind ${opts} $SHEEP_PROG $@ -f -o 2> $1/sheep.log &"
+    sh -c "echo y | valgrind ${opts} $SHEEP_PROG $@ -f -o 2>> $1/sheep.log &"
 
     # wait for sheep to start up
     while true; do
@@ -318,14 +318,14 @@ _make_device()
             ;;
     esac
 
-    mkfs $mkops $STORE/$idx.img > $seq.full
+    mkfs $mkops $STORE/$idx.img > $seq.full 2>&1
     mkdir $STORE/$idx
     mount -o loop $mntops $args $STORE/$idx.img $STORE/$idx
 }
 
 _cleanup_devices()
 {
-    for d in `mount | grep -o $STORE/.`; do
+    for d in `mount | grep -o $STORE/. | sort | uniq`; do
         umount -l $d
         rm -f $d.img
     done

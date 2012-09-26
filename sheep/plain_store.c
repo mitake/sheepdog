@@ -305,10 +305,9 @@ int prealloc(int fd, uint32_t size)
 {
 	int ret = fallocate(fd, 0, 0, size);
 	if (ret < 0) {
-		if (errno != ENOSYS && errno != EOPNOTSUPP) {
-			dprintf("%m\n");
-			ret = SD_RES_SYSTEM_ERROR;
-		} else
+		if (errno != ENOSYS && errno != EOPNOTSUPP)
+			ret = err_to_sderr(0, errno); /* FIXME: set oid */
+		else
 			ret = write_last_sector(fd, size);
 	} else
 		ret = SD_RES_SUCCESS;
@@ -346,7 +345,7 @@ int default_create_and_write(uint64_t oid, struct siocb *iocb)
 			goto out;
 	}
 
-	ret = xwrite(fd, iocb->buf, len);
+	ret = xpwrite(fd, iocb->buf, len, iocb->offset);
 	if (ret != len) {
 		eprintf("failed to write object. %m\n");
 		ret = err_to_sderr(oid, errno);

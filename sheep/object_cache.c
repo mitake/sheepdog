@@ -48,7 +48,7 @@
 
 
 struct global_cache {
-	uint64_t cache_size;
+	uint32_t cache_size;
 	int in_reclaim;
 	struct cds_list_head cache_lru_list;
 };
@@ -515,8 +515,8 @@ static int do_reclaim_object(struct object_cache_entry *entry)
 		goto out;
 	}
 
-	dprintf("oid %"PRIx64" reclaimed successfully, cache_size: %ld\n", oid,
-		uatomic_read(&sys_cache.cache_size));
+	dprintf("oid %"PRIx64" reclaimed successfully, cache_size: %"PRId32"\n",
+		oid, uatomic_read(&sys_cache.cache_size));
 	del_from_object_tree_and_list(entry, &oc->object_tree);
 out:
 	pthread_rwlock_unlock(&oc->lock);
@@ -548,6 +548,7 @@ static void do_reclaim(struct work *work)
 		else
 			data_length = SD_DATA_OBJ_SIZE;
 
+		data_length = data_length / 1024 / 1024;
 		uatomic_sub(&sys_cache.cache_size, data_length);
 		free(entry);
 	}
@@ -644,6 +645,7 @@ static void add_to_object_cache(struct object_cache *oc, uint32_t idx,
 		data_length = SD_INODE_SIZE;
 	else
 		data_length = SD_DATA_OBJ_SIZE;
+	data_length = data_length / 1024 / 1024;
 
 	entry = xzalloc(sizeof(*entry));
 	entry->oc = oc;
@@ -939,6 +941,27 @@ out:
 int bypass_object_cache(struct request *req)
 {
 	uint64_t oid = req->rq.obj.oid;
+
+	if (req->rq.flags & SD_FLAG_CMD_DIRECT) {
+		uint32_t vid = oid_to_vid(oid);
+		struct object_cache *cache;
+
+		cache = find_object_cache(vid, 0);
+		if (!cache)
+			return 1;
+		if (req->rq.flags & SD_FLAG_CMD_WRITE) {
+			object_cache_flush_and_delete(cache);
+			return 1;
+		} else  {
+			/* For read requet, we can read cache if any */
+			uint32_t idx = object_cache_oid_to_idx(oid);
+
+			if (object_cache_lookup(cache, idx, 0, false) == 0)
+				return 0;
+			else
+				return 1;
+		}
+	}
 
 	/*
 	 * For vmstate && vdi_attr object, we don't do caching

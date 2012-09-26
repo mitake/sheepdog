@@ -193,22 +193,23 @@ static void object_cache_size_set(char *s)
 	const char *header = "size=";
 	int len = strlen(header);
 	char *size, *p;
-	int64_t cache_size;
+	uint64_t cache_size;
+	const uint32_t max_cache_size = UINT32_MAX;
 
 	assert(!strncmp(s, header, len));
 
 	size = s + len;
-	cache_size = strtol(size, &p, 10);
-	if (size == p || cache_size < 0 || UINT64_MAX < cache_size)
+	cache_size = strtoull(size, &p, 10);
+	if (size == p || max_cache_size < cache_size)
 		goto err;
 
-	sys->object_cache_size = cache_size * 1024 * 1024;
+	sys->object_cache_size = cache_size;
 	return;
 
 err:
 	fprintf(stderr, "Invalid object cache option '%s': "
-		"size must be an integer between 0 and %lu\n",
-		s, UINT64_MAX);
+		"size must be an integer between 0 and %"PRIu32"\n",
+		s, max_cache_size);
 	exit(1);
 }
 
@@ -388,8 +389,8 @@ int main(int argc, char **argv)
 			if (optarg == p || free_space <= 0 ||
 			    UINT64_MAX < free_space) {
 				fprintf(stderr, "Invalid free space size '%s': "
-					"must be an integer between 0 and %lu\n",
-					optarg, UINT64_MAX);
+					"must be an integer between 0 and "
+					"%"PRIu64"\n", optarg, UINT64_MAX);
 				exit(1);
 			}
 			sys->disk_space = free_space * 1024 * 1024;

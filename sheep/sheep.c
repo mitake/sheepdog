@@ -26,9 +26,11 @@
 #include <sys/eventfd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <arpa/inet.h>
 
 #include "sheep_priv.h"
 #include "trace/trace.h"
+#include "util.h"
 
 #define EPOLL_SIZE 4096
 #define DEFAULT_OBJECT_DIR "/tmp"
@@ -38,6 +40,7 @@ LIST_HEAD(cluster_drivers);
 static char program_name[] = "sheep";
 
 static struct option const long_options[] = {
+	{"bindaddr", required_argument, NULL, 'b'},
 	{"cluster", required_argument, NULL, 'c'},
 	{"debug", no_argument, NULL, 'd'},
 	{"foreground", no_argument, NULL, 'f'},
@@ -49,13 +52,14 @@ static struct option const long_options[] = {
 	{"stdout", no_argument, NULL, 'o'},
 	{"port", required_argument, NULL, 'p'},
 	{"disk-space", required_argument, NULL, 's'},
+	{"upgrade", no_argument, NULL, 'u'},
 	{"zone", required_argument, NULL, 'z'},
 	{"pidfile", required_argument, NULL, 'P'},
 	{"write-cache", required_argument, NULL, 'w'},
 	{NULL, 0, NULL, 0},
 };
 
-static const char *short_options = "c:dDfghjl:op:P:s:w:y:z:";
+static const char *short_options = "b:c:dDfghjl:op:P:s:uw:y:z:";
 
 static void usage(int status)
 {
@@ -67,6 +71,7 @@ static void usage(int status)
 Sheepdog daemon (version %s)\n\
 Usage: %s [OPTION]... [PATH]\n\
 Options:\n\
+  -b, --bindaddr          specify IP address of interface to listen on\n\
   -c, --cluster           specify the cluster driver\n\
   -d, --debug             include debug messages in the log\n\
   -f, --foreground        make the program run in the foreground\n\
@@ -78,6 +83,7 @@ Options:\n\
   -p, --port              specify the TCP port on which to listen\n\
   -P, --pidfile           create a pid file\n\
   -s, --disk-space        specify the free disk space in megabytes\n\
+  -u, --upgrade           upgrade to the latest data layout\n\
   -y, --myaddr            specify the address advertised to other sheep\n\
   -z, --zone              specify the zone id\n\
   -w, --write-cache       specify the cache type\n\
@@ -208,7 +214,7 @@ static void object_cache_size_set(char *s)
 
 err:
 	fprintf(stderr, "Invalid object cache option '%s': "
-		"size must be an integer between 0 and %"PRIu32"\n",
+		"size must be an integer between 1 and %"PRIu32" inclusive\n",
 		s, max_cache_size);
 	exit(1);
 }
@@ -222,7 +228,7 @@ static void object_cache_directio_set(char *s)
 static void _object_cache_set(char *s)
 {
 	int i;
-	static int first = 1;
+	static bool first = true;
 
 	struct object_cache_arg {
 		const char *name;
@@ -237,7 +243,7 @@ static void _object_cache_set(char *s)
 
 	if (first) {
 		assert(!strcmp(s, "object"));
-		first = 0;
+		first = false;
 		return;
 	}
 
@@ -295,11 +301,11 @@ static void do_cache_type(char *s)
 
 static void init_cache_type(char *arg)
 {
-	sys->object_cache_size = -1;
+	sys->object_cache_size = 0;
 
 	parse_arg(arg, ",", do_cache_type);
 
-	if (is_object_cache_enabled() && sys->object_cache_size == -1) {
+	if (is_object_cache_enabled() && sys->object_cache_size == 0) {
 		fprintf(stderr, "object cache size is not set\n");
 		exit(1);
 	}
@@ -310,8 +316,8 @@ int main(int argc, char **argv)
 	int ch, longindex;
 	int ret, port = SD_LISTEN_PORT;
 	const char *dir = DEFAULT_OBJECT_DIR;
-	int is_daemon = 1;
-	int to_stdout = 0;
+	bool is_daemon = true;
+	bool to_stdout = false;
 	int log_level = SDOG_INFO;
 	char path[PATH_MAX];
 	int64_t zone = -1;
@@ -322,6 +328,10 @@ int main(int argc, char **argv)
 	char *p;
 	struct cluster_driver *cdrv;
 	char *pid_file = NULL;
+	char *bindaddr = NULL;
+	unsigned char buf[sizeof(struct in6_addr)];
+	int ipv4 = 0;
+	int ipv6 = 0;
 
 	signal(SIGPIPE, SIG_IGN);
 
@@ -340,7 +350,7 @@ int main(int argc, char **argv)
 			pid_file = optarg;
 			break;
 		case 'f':
-			is_daemon = 0;
+			is_daemon = false;
 			break;
 		case 'l':
 			log_level = strtol(optarg, &p, 10);
@@ -372,7 +382,7 @@ int main(int argc, char **argv)
 			nr_vnodes = 0;
 			break;
 		case 'o':
-			to_stdout = 1;
+			to_stdout = true;
 			break;
 		case 'z':
 			zone = strtol(optarg, &p, 10);
@@ -395,6 +405,9 @@ int main(int argc, char **argv)
 			}
 			sys->disk_space = free_space * 1024 * 1024;
 			break;
+		case 'u':
+			sys->upgrade = true;
+			break;
 		case 'c':
 			sys->cdrv = find_cdrv(optarg);
 			if (!sys->cdrv) {
@@ -415,6 +428,18 @@ int main(int argc, char **argv)
 		case 'j':
 			sys->use_journal = true;
 			break;
+		case 'b':
+			/* validate provided address using inet_pton */
+			ipv4 = inet_pton(AF_INET, optarg, buf);
+			ipv6 = inet_pton(AF_INET6, optarg, buf);
+			if (ipv4 || ipv6) {
+				bindaddr = optarg;
+			} else {
+				fprintf(stderr,
+					"Invalid bind address '%s'\n", optarg);
+				exit(1);
+			}
+			break;
 		case 'h':
 			usage(0);
 			break;
@@ -424,7 +449,7 @@ int main(int argc, char **argv)
 		}
 	}
 	if (nr_vnodes == 0) {
-		sys->gateway_only = 1;
+		sys->gateway_only = true;
 		sys->disk_space = 0;
 	}
 
@@ -454,7 +479,7 @@ int main(int argc, char **argv)
 	if (ret)
 		exit(1);
 
-	ret = create_listen_port(port, sys);
+	ret = create_listen_port(bindaddr, port, sys);
 	if (ret)
 		exit(1);
 

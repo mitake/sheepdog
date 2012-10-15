@@ -39,8 +39,11 @@ int gateway_read_obj(struct request *req)
 	uint64_t oid = req->rq.obj.oid;
 	int nr_copies, j;
 
-	if (is_object_cache_enabled() && !req->local && !bypass_object_cache(req))
-		return object_cache_handle_request(req);
+	if (is_object_cache_enabled() && !req->local &&
+	    !bypass_object_cache(req)) {
+		ret = object_cache_handle_request(req);
+		goto out;
+	}
 
 	nr_copies = get_req_copy_number(req);
 	oid_to_vnodes(req->vinfo->vnodes, req->vinfo->nr_vnodes, oid,
@@ -51,7 +54,7 @@ int gateway_read_obj(struct request *req)
 			continue;
 		ret = peer_read_obj(req);
 		if (ret == SD_RES_SUCCESS)
-			return ret;
+			goto out;
 
 		eprintf("local read fail %x\n", ret);
 		break;
@@ -84,6 +87,15 @@ int gateway_read_obj(struct request *req)
 		memcpy(&req->rp, rsp, sizeof(*rsp));
 		break;
 	}
+out:
+	if (ret == SD_RES_SUCCESS &&
+	    req->rq.proto_ver < SD_PROTO_VER_TRIM_ZERO_SECTORS) {
+		/* the client doesn't support trimming zero bytes */
+		set_trimmed_sectors(req->data, req->rp.obj.offset,
+				    req->rp.data_length, req->rq.data_length);
+		req->rp.data_length = req->rq.data_length;
+		req->rp.obj.offset = 0;
+	}
 	return ret;
 }
 
@@ -94,7 +106,7 @@ struct write_info_entry {
 };
 
 struct write_info {
-	struct write_info_entry ent[SD_MAX_COPIES];
+	struct write_info_entry ent[SD_MAX_NODES];
 	int nr_sent;
 };
 
@@ -119,7 +131,7 @@ static inline void finish_one_write_err(struct write_info *wi, int i)
 }
 
 struct pfd_info {
-	struct pollfd pfds[SD_MAX_COPIES];
+	struct pollfd pfds[SD_MAX_NODES];
 	int nr;
 };
 
@@ -203,7 +215,7 @@ finish_write:
 static inline void write_info_init(struct write_info *wi)
 {
 	int i;
-	for (i = 0; i < SD_MAX_COPIES; i++)
+	for (i = 0; i < SD_MAX_NODES; i++)
 		wi->ent[i].pfd.fd = -1;
 	wi->nr_sent = 0;
 }
@@ -249,7 +261,7 @@ static int gateway_forward_request(struct request *req, bool all_node)
 	struct write_info wi;
 	struct sd_op_template *op;
 	struct sd_req hdr;
-	struct sd_node *target_nodes[SD_MAX_COPIES];
+	struct sd_node *target_nodes[SD_MAX_NODES];
 
 	dprintf("%"PRIx64"\n", oid);
 

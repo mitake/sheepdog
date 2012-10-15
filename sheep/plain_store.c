@@ -91,7 +91,7 @@ int for_each_object_in_wd(int (*func)(uint64_t oid, void *arg), bool cleanup,
 	return ret;
 }
 
-int default_exist(uint64_t oid)
+bool default_exist(uint64_t oid)
 {
 	char path[PATH_MAX];
 
@@ -99,10 +99,10 @@ int default_exist(uint64_t oid)
 	if (access(path, R_OK | W_OK) < 0) {
 		if (errno != ENOENT)
 			eprintf("failed to check object %"PRIx64", %m\n", oid);
-		return 0;
+		return false;
 	}
 
-	return 1;
+	return true;
 }
 
 static int err_to_sderr(uint64_t oid, int err)
@@ -274,30 +274,6 @@ int default_read(uint64_t oid, struct siocb *iocb)
 	return ret;
 }
 
-static int write_last_sector(int fd, uint32_t length)
-{
-	const int size = SECTOR_SIZE;
-	char *buf;
-	int ret;
-	off_t off = length - size;
-
-	buf = valloc(size);
-	if (!buf) {
-		eprintf("failed to allocate memory\n");
-		return SD_RES_NO_MEM;
-	}
-	memset(buf, 0, size);
-
-	ret = xpwrite(fd, buf, size, off);
-	if (ret != size)
-		ret = err_to_sderr(0, errno); /* FIXME: set oid */
-	else
-		ret = SD_RES_SUCCESS;
-	free(buf);
-
-	return ret;
-}
-
 /*
  * Preallocate the whole object to get a better filesystem layout.
  */
@@ -305,13 +281,15 @@ int prealloc(int fd, uint32_t size)
 {
 	int ret = fallocate(fd, 0, 0, size);
 	if (ret < 0) {
-		if (errno != ENOSYS && errno != EOPNOTSUPP)
-			ret = err_to_sderr(0, errno); /* FIXME: set oid */
-		else
-			ret = write_last_sector(fd, size);
-	} else
-		ret = SD_RES_SUCCESS;
-	return ret;
+		if (errno != ENOSYS && errno != EOPNOTSUPP) {
+			eprintf("failed to preallocate space, %m\n");
+			return ret;
+		}
+
+		return ftruncate(fd, size);
+	}
+
+	return 0;
 }
 
 int default_create_and_write(uint64_t oid, struct siocb *iocb)
@@ -323,6 +301,9 @@ int default_create_and_write(uint64_t oid, struct siocb *iocb)
 
 	get_obj_path(oid, path);
 	get_tmp_obj_path(oid, tmp_path);
+
+	if (iocb->flags & SD_FLAG_CMD_CACHE && is_disk_cache_enabled())
+		flags &= ~O_DSYNC;
 
 	fd = open(tmp_path, flags, def_fmode);
 	if (fd < 0) {
@@ -341,8 +322,10 @@ int default_create_and_write(uint64_t oid, struct siocb *iocb)
 
 	if (iocb->offset != 0 || iocb->length != get_objsize(oid)) {
 		ret = prealloc(fd, get_objsize(oid));
-		if (ret != SD_RES_SUCCESS)
+		if (ret < 0) {
+			ret = err_to_sderr(oid, errno);
 			goto out;
+		}
 	}
 
 	ret = xpwrite(fd, iocb->buf, len, iocb->offset);
@@ -519,7 +502,7 @@ int default_flush(void)
 	return ret;
 }
 
-struct store_driver plain_store = {
+static struct store_driver plain_store = {
 	.name = "plain",
 	.init = default_init,
 	.exist = default_exist,

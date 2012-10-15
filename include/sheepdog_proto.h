@@ -15,7 +15,10 @@
 #include <stdint.h>
 #include "util.h"
 
-#define SD_PROTO_VER 0x01
+#define SD_PROTO_VER 0x02
+
+/* This or later version supports trimming zero sectors from read response */
+#define SD_PROTO_VER_TRIM_ZERO_SECTORS 0x02
 
 #define SD_LISTEN_PORT 7000
 
@@ -97,7 +100,6 @@
 #define SD_NR_VDIS   (1U << 24)
 #define SD_DATA_OBJ_SIZE (UINT64_C(1) << 22)
 #define SD_MAX_VDI_SIZE (SD_DATA_OBJ_SIZE * MAX_DATA_OBJS)
-#define SECTOR_SIZE (1U << 9)
 
 #define SD_INODE_SIZE (sizeof(struct sheepdog_inode))
 #define SD_INODE_HEADER_SIZE (sizeof(struct sheepdog_inode) - \
@@ -139,18 +141,21 @@ struct sd_rsp {
 	uint32_t	epoch;
 	uint32_t        id;
 	uint32_t        data_length;
-	uint32_t        result;
 	union {
+		uint32_t        result;
 		struct {
+			uint32_t	__pad;
 			uint32_t	copies;
+			uint64_t	offset;
 		} obj;
 		struct {
+			uint32_t	__pad;
 			uint32_t	rsvd;
 			uint32_t	vdi_id;
 			uint32_t	attr_id;
 			uint32_t	copies;
 		} vdi;
-		uint32_t		__pad[7];
+		uint32_t		__pad[8];
 	};
 };
 
@@ -217,27 +222,27 @@ static inline uint64_t hash_64(uint64_t val, unsigned int bits)
 	return hash & ((1 << bits) - 1);
 }
 
-static inline int is_data_obj_writeable(struct sheepdog_inode *inode, int idx)
+static inline bool is_data_obj_writeable(struct sheepdog_inode *inode, int idx)
 {
 	return inode->vdi_id == inode->data_vdi_id[idx];
 }
 
-static inline int is_vdi_obj(uint64_t oid)
+static inline bool is_vdi_obj(uint64_t oid)
 {
 	return !!(oid & VDI_BIT);
 }
 
-static inline int is_vmstate_obj(uint64_t oid)
+static inline bool is_vmstate_obj(uint64_t oid)
 {
 	return !!(oid & VMSTATE_BIT);
 }
 
-static inline int is_vdi_attr_obj(uint64_t oid)
+static inline bool is_vdi_attr_obj(uint64_t oid)
 {
 	return !!(oid & VDI_ATTR_BIT);
 }
 
-static inline int is_data_obj(uint64_t oid)
+static inline bool is_data_obj(uint64_t oid)
 {
 	return !is_vdi_obj(oid) && !is_vmstate_obj(oid) &&
 		!is_vdi_attr_obj(oid);

@@ -28,20 +28,10 @@
 #include "util.h"
 #include "farm/farm.h"
 
-struct sheepdog_config {
-	uint64_t ctime;
-	uint16_t flags;
-	uint8_t copies;
-	uint8_t store[STORE_LEN];
-	uint8_t __pad[5];
-	uint64_t space;
-};
-
 char *obj_path;
 char *mnt_path;
 char *jrnl_path;
 char *epoch_path;
-static char *config_path;
 
 mode_t def_dmode = S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP | S_IWGRP | S_IXGRP;
 mode_t def_fmode = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP;
@@ -167,6 +157,9 @@ uint32_t get_latest_epoch(void)
 		if (d->d_name == p)
 			continue;
 
+		if (strlen(d->d_name) != 8)
+			continue;
+
 		if (e > epoch)
 			epoch = e;
 	}
@@ -175,58 +168,13 @@ uint32_t get_latest_epoch(void)
 	return epoch;
 }
 
-int set_cluster_ctime(uint64_t ct)
-{
-	int fd, ret;
-	void *jd;
-
-	fd = open(config_path, O_DSYNC | O_WRONLY);
-	if (fd < 0)
-		return SD_RES_EIO;
-
-	jd = jrnl_begin(&ct, sizeof(ct),
-			offsetof(struct sheepdog_config, ctime),
-			config_path, jrnl_path);
-	if (!jd) {
-		ret = SD_RES_EIO;
-		goto err;
-	}
-	ret = xpwrite(fd, &ct, sizeof(ct), offsetof(struct sheepdog_config, ctime));
-	if (ret != sizeof(ct))
-		ret = SD_RES_EIO;
-	else
-		ret = SD_RES_SUCCESS;
-
-	jrnl_end(jd);
-err:
-	close(fd);
-	return ret;
-}
-
-uint64_t get_cluster_ctime(void)
-{
-	int fd, ret;
-	uint64_t ct;
-
-	fd = open(config_path, O_RDONLY);
-	if (fd < 0)
-		return 0;
-
-	ret = xpread(fd, &ct, sizeof(ct),
-		     offsetof(struct sheepdog_config, ctime));
-	close(fd);
-
-	if (ret != sizeof(ct))
-		return 0;
-	return ct;
-}
-
-static int init_path(const char *d, int *new)
+static int init_path(const char *d, bool *new)
 {
 	int ret, retry = 0;
 	struct stat s;
 
-	*new = 0;
+	if (new)
+		*new = false;
 again:
 	ret = stat(d, &s);
 	if (ret) {
@@ -240,7 +188,8 @@ again:
 			eprintf("cannot create the directory %s: %m\n", d);
 			return 1;
 		} else {
-			*new = 1;
+			if (new)
+				*new = true;
 			retry++;
 			goto again;
 		}
@@ -291,10 +240,9 @@ out:
 
 int init_base_path(const char *d)
 {
-	int new = 0;
 	int ret;
 
-	ret = init_path(d, &new);
+	ret = init_path(d, NULL);
 	if (ret)
 		return ret;
 	return lock_base_dir(d);
@@ -304,7 +252,7 @@ int init_base_path(const char *d)
 
 static int init_obj_path(const char *base_path)
 {
-	int new, len;
+	int len;
 
 	len = strlen(base_path);
 	/* farm needs extra HEX_LEN + 3 chars to store snapshot objects.
@@ -318,19 +266,17 @@ static int init_obj_path(const char *base_path)
 	obj_path = zalloc(strlen(base_path) + strlen(OBJ_PATH) + 1);
 	sprintf(obj_path, "%s" OBJ_PATH, base_path);
 
-	return init_path(obj_path, &new);
+	return init_path(obj_path, NULL);
 }
 
 #define EPOCH_PATH "/epoch/"
 
 static int init_epoch_path(const char *base_path)
 {
-	int new;
-
 	epoch_path = zalloc(strlen(base_path) + strlen(EPOCH_PATH) + 1);
 	sprintf(epoch_path, "%s" EPOCH_PATH, base_path);
 
-	return init_path(epoch_path, &new);
+	return init_path(epoch_path, NULL);
 }
 
 static int init_mnt_path(const char *base_path)
@@ -368,7 +314,8 @@ static int init_mnt_path(const char *base_path)
 
 static int init_jrnl_path(const char *base_path)
 {
-	int new, ret;
+	int ret;
+	bool new;
 
 	/* Create journal directory */
 	jrnl_path = zalloc(strlen(base_path) + strlen(JRNL_PATH) + 1);
@@ -384,18 +331,6 @@ static int init_jrnl_path(const char *base_path)
 		return 0;
 
 	jrnl_recover(jrnl_path);
-
-	return 0;
-}
-
-#define CONFIG_PATH "/config"
-
-static int init_config_path(const char *base_path)
-{
-	config_path = zalloc(strlen(base_path) + strlen(CONFIG_PATH) + 1);
-	sprintf(config_path, "%s" CONFIG_PATH, base_path);
-
-	mknod(config_path, def_fmode, S_IFREG);
 
 	return 0;
 }
@@ -517,7 +452,7 @@ int init_store(const char *d)
  * Write data to both local object cache (if enabled) and backends
  */
 int write_object(uint64_t oid, char *data, unsigned int datalen,
-		 uint64_t offset, uint16_t flags, int create, int nr_copies)
+		 uint64_t offset, uint16_t flags, bool create, int nr_copies)
 {
 	struct sd_req hdr;
 	int ret;
@@ -558,6 +493,7 @@ int read_backend_object(uint64_t oid, char *data, unsigned int datalen,
 		       uint64_t offset, int nr_copies)
 {
 	struct sd_req hdr;
+	struct sd_rsp *rsp = (struct sd_rsp *)&hdr;
 	int ret;
 
 	sd_init_req(&hdr, SD_OP_READ_OBJ);
@@ -569,6 +505,8 @@ int read_backend_object(uint64_t oid, char *data, unsigned int datalen,
 	ret = exec_local_req(&hdr, data);
 	if (ret != SD_RES_SUCCESS)
 		eprintf("failed to read object %" PRIx64 ", %x\n", oid, ret);
+
+	set_trimmed_sectors(data, rsp->obj.offset, rsp->data_length, datalen);
 
 	return ret;
 }
@@ -611,200 +549,5 @@ int remove_object(uint64_t oid, int copies)
 	if (ret != SD_RES_SUCCESS)
 		eprintf("failed to remove object %" PRIx64 ", %x\n", oid, ret);
 
-	return ret;
-}
-
-int set_cluster_copies(uint8_t copies)
-{
-	int fd, ret;
-	void *jd;
-
-	fd = open(config_path, O_DSYNC | O_WRONLY);
-	if (fd < 0)
-		return SD_RES_EIO;
-
-	jd = jrnl_begin(&copies, sizeof(copies),
-			offsetof(struct sheepdog_config, copies),
-			config_path, jrnl_path);
-	if (!jd) {
-		ret = SD_RES_EIO;
-		goto err;
-	}
-
-	ret = xpwrite(fd, &copies, sizeof(copies), offsetof(struct sheepdog_config, copies));
-	if (ret != sizeof(copies))
-		ret = SD_RES_EIO;
-	else
-		ret = SD_RES_SUCCESS;
-	jrnl_end(jd);
-err:
-	close(fd);
-	return ret;
-}
-
-int get_cluster_copies(uint8_t *copies)
-{
-	int fd, ret;
-
-	fd = open(config_path, O_RDONLY);
-	if (fd < 0)
-		return SD_RES_EIO;
-
-	ret = xpread(fd, copies, sizeof(*copies),
-		     offsetof(struct sheepdog_config, copies));
-	close(fd);
-
-	if (ret != sizeof(*copies))
-		return SD_RES_EIO;
-
-	return SD_RES_SUCCESS;
-}
-
-int set_cluster_flags(uint16_t flags)
-{
-	int fd, ret = SD_RES_EIO;
-	void *jd;
-
-	fd = open(config_path, O_DSYNC | O_WRONLY);
-	if (fd < 0)
-		goto out;
-
-	jd = jrnl_begin(&flags, sizeof(flags),
-			offsetof(struct sheepdog_config, flags),
-			config_path, jrnl_path);
-	if (!jd) {
-		ret = SD_RES_EIO;
-		goto err;
-	}
-	ret = xpwrite(fd, &flags, sizeof(flags), offsetof(struct sheepdog_config, flags));
-	if (ret != sizeof(flags))
-		ret = SD_RES_EIO;
-	else
-		ret = SD_RES_SUCCESS;
-	jrnl_end(jd);
-err:
-	close(fd);
-out:
-	return ret;
-}
-
-int get_cluster_flags(uint16_t *flags)
-{
-	int fd, ret = SD_RES_EIO;
-
-	fd = open(config_path, O_RDONLY);
-	if (fd < 0)
-		goto out;
-
-	ret = xpread(fd, flags, sizeof(*flags),
-		     offsetof(struct sheepdog_config, flags));
-	if (ret != sizeof(*flags))
-		ret = SD_RES_EIO;
-	else
-		ret = SD_RES_SUCCESS;
-
-	close(fd);
-out:
-	return ret;
-}
-
-int set_cluster_store(const char *name)
-{
-	int fd, ret = SD_RES_EIO, len;
-	void *jd;
-
-	fd = open(config_path, O_DSYNC | O_WRONLY);
-	if (fd < 0)
-		goto out;
-
-	len = strlen(name) + 1;
-	if (len > STORE_LEN)
-		goto err;
-	jd = jrnl_begin(name, len,
-			offsetof(struct sheepdog_config, store),
-			config_path, jrnl_path);
-	if (!jd) {
-		ret = SD_RES_EIO;
-		goto err;
-	}
-	ret = xpwrite(fd, name, len, offsetof(struct sheepdog_config, store));
-	if (ret != len)
-		ret = SD_RES_EIO;
-	else
-		ret = SD_RES_SUCCESS;
-	jrnl_end(jd);
-err:
-	close(fd);
-out:
-	return ret;
-}
-
-int get_cluster_store(char *buf)
-{
-	int fd, ret = SD_RES_EIO;
-
-	fd = open(config_path, O_RDONLY);
-	if (fd < 0)
-		goto out;
-
-	ret = pread(fd, buf, STORE_LEN,
-		    offsetof(struct sheepdog_config, store));
-
-	if (ret == -1)
-		ret = SD_RES_EIO;
-	else
-		ret = SD_RES_SUCCESS;
-
-	close(fd);
-out:
-	return ret;
-}
-
-int set_cluster_space(uint64_t space)
-{
-	int fd, ret = SD_RES_EIO;
-	void *jd;
-
-	fd = open(config_path, O_DSYNC | O_WRONLY);
-	if (fd < 0)
-		goto out;
-
-	jd = jrnl_begin(&space, sizeof(space),
-			offsetof(struct sheepdog_config, space),
-			config_path, jrnl_path);
-	if (!jd) {
-		ret = SD_RES_EIO;
-		goto err;
-	}
-	ret = xpwrite(fd, &space, sizeof(space),
-		      offsetof(struct sheepdog_config, space));
-	if (ret != sizeof(space))
-		ret = SD_RES_EIO;
-	else
-		ret = SD_RES_SUCCESS;
-	jrnl_end(jd);
-err:
-	close(fd);
-out:
-	return ret;
-}
-
-int get_cluster_space(uint64_t *space)
-{
-	int fd, ret = SD_RES_EIO;
-
-	fd = open(config_path, O_RDONLY);
-	if (fd < 0)
-		goto out;
-
-	ret = xpread(fd, space, sizeof(*space),
-		     offsetof(struct sheepdog_config, space));
-	if (ret != sizeof(*space))
-		ret = SD_RES_EIO;
-	else
-		ret = SD_RES_SUCCESS;
-
-	close(fd);
-out:
 	return ret;
 }

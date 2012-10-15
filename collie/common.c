@@ -11,7 +11,7 @@
 
 #include "collie.h"
 
-int is_current(struct sheepdog_inode *i)
+bool is_current(struct sheepdog_inode *i)
 {
 	return !i->snap_ctime;
 }
@@ -78,12 +78,14 @@ int sd_read_object(uint64_t oid, void *data, unsigned int datalen,
 		return rsp->result;
 	}
 
+	set_trimmed_sectors(data, rsp->obj.offset, rsp->data_length, datalen);
+
 	return SD_RES_SUCCESS;
 }
 
 int sd_write_object(uint64_t oid, uint64_t cow_oid, void *data,
 		    unsigned int datalen, uint64_t offset, uint32_t flags,
-		    int copies, int create, bool direct)
+		    int copies, bool create, bool direct)
 {
 	struct sd_req hdr;
 	struct sd_rsp *rsp = (struct sd_rsp *)&hdr;

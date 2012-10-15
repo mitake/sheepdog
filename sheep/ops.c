@@ -39,7 +39,7 @@ struct sd_op_template {
 	enum sd_op_type type;
 
 	/* process request even when cluster is not working */
-	int force;
+	bool force;
 
 	/*
 	 * process_work() will be called in a worker thread, and process_main()
@@ -317,7 +317,7 @@ static int cluster_shutdown(const struct sd_req *req, struct sd_rsp *rsp,
 static int cluster_enable_recover(const struct sd_req *req,
 				    struct sd_rsp *rsp, void *data)
 {
-	sys->disable_recovery = 0;
+	sys->disable_recovery = false;
 	resume_suspended_recovery();
 	return SD_RES_SUCCESS;
 }
@@ -325,7 +325,7 @@ static int cluster_enable_recover(const struct sd_req *req,
 static int cluster_disable_recover(const struct sd_req *req,
 				   struct sd_rsp *rsp, void *data)
 {
-	sys->disable_recovery = 1;
+	sys->disable_recovery = true;
 	return SD_RES_SUCCESS;
 }
 
@@ -350,9 +350,9 @@ static int cluster_get_vdi_attr(struct request *req)
 	vid &= SD_NR_VDIS - 1;
 	ret = get_vdi_attr(req->data, hdr->data_length,
 			   vid, &attrid, created_time,
-			   hdr->flags & SD_FLAG_CMD_CREAT,
-			   hdr->flags & SD_FLAG_CMD_EXCL,
-			   hdr->flags & SD_FLAG_CMD_DEL);
+			   !!(hdr->flags & SD_FLAG_CMD_CREAT),
+			   !!(hdr->flags & SD_FLAG_CMD_EXCL),
+			   !!(hdr->flags & SD_FLAG_CMD_DEL));
 
 	rsp->vdi.vdi_id = vid;
 	rsp->vdi.attr_id = attrid;
@@ -718,6 +718,8 @@ static int read_copy_from_replica(struct request *req, uint32_t epoch,
 {
 	struct request read_req = { };
 	struct sd_req *hdr = &read_req.rq;
+	struct sd_rsp *rsp = &read_req.rp;
+	int ret;
 
 	/* Create a fake gateway read request */
 	sd_init_req(hdr, SD_OP_READ_OBJ);
@@ -732,7 +734,13 @@ static int read_copy_from_replica(struct request *req, uint32_t epoch,
 	read_req.op = get_sd_op(hdr->opcode);
 	read_req.vinfo = req->vinfo;
 
-	return gateway_read_obj(&read_req);
+	ret = gateway_read_obj(&read_req);
+
+	if (ret == SD_RES_SUCCESS)
+		set_trimmed_sectors(buf, rsp->obj.offset, rsp->data_length,
+				    SD_DATA_OBJ_SIZE);
+
+	return ret;
 }
 
 int peer_remove_obj(struct request *req)
@@ -767,6 +775,9 @@ int peer_read_obj(struct request *req)
 		goto out;
 
 	rsp->data_length = hdr->data_length;
+	rsp->obj.offset = 0;
+	trim_zero_sectors(req->data, &rsp->obj.offset, &rsp->data_length);
+
 	if (hdr->obj.copies)
 		rsp->obj.copies = hdr->obj.copies;
 	else
@@ -863,6 +874,8 @@ int peer_create_and_write_obj(struct request *req)
 		memcpy(&cow_hdr, hdr, sizeof(cow_hdr));
 		cow_hdr.data_length = SD_DATA_OBJ_SIZE;
 		cow_hdr.obj.offset = 0;
+		trim_zero_sectors(buf, &cow_hdr.obj.offset,
+				  &cow_hdr.data_length);
 
 		ret = do_create_and_write_obj(&iocb, &cow_hdr, epoch, buf);
 	} else
@@ -916,7 +929,7 @@ static struct sd_op_template sd_ops[] = {
 	[SD_OP_MAKE_FS] = {
 		.name = "MAKE_FS",
 		.type = SD_OP_TYPE_CLUSTER,
-		.force = 1,
+		.force = true,
 		.process_main = cluster_make_fs,
 	},
 
@@ -940,42 +953,42 @@ static struct sd_op_template sd_ops[] = {
 	[SD_OP_FORCE_RECOVER] = {
 		.name = "FORCE_RECOVER",
 		.type = SD_OP_TYPE_CLUSTER,
-		.force = 1,
+		.force = true,
 		.process_main = cluster_force_recover,
 	},
 
 	[SD_OP_SNAPSHOT] = {
 		.name = "SNAPSHOT",
 		.type = SD_OP_TYPE_CLUSTER,
-		.force = 1,
+		.force = true,
 		.process_main = cluster_snapshot,
 	},
 
 	[SD_OP_RESTORE] = {
 		.name = "RESTORE",
 		.type = SD_OP_TYPE_CLUSTER,
-		.force = 1,
+		.force = true,
 		.process_main = cluster_restore,
 	},
 
 	[SD_OP_CLEANUP] = {
 		.name = "CLEANUP",
 		.type = SD_OP_TYPE_CLUSTER,
-		.force = 1,
+		.force = true,
 		.process_main = cluster_cleanup,
 	},
 
 	[SD_OP_NOTIFY_VDI_DEL] = {
 		.name = "NOTIFY_VDI_DEL",
 		.type = SD_OP_TYPE_CLUSTER,
-		.force = 1,
+		.force = true,
 		.process_main = cluster_notify_vdi_del,
 	},
 
 	[SD_OP_COMPLETE_RECOVERY] = {
 		.name = "COMPLETE_RECOVERY",
 		.type = SD_OP_TYPE_CLUSTER,
-		.force = 1,
+		.force = true,
 		.process_main = cluster_recovery_completion,
 	},
 
@@ -983,28 +996,28 @@ static struct sd_op_template sd_ops[] = {
 	[SD_OP_GET_STORE_LIST] = {
 		.name = "GET_STORE_LIST",
 		.type = SD_OP_TYPE_LOCAL,
-		.force = 1,
+		.force = true,
 		.process_work = local_get_store_list,
 	},
 
 	[SD_OP_READ_VDIS] = {
 		.name = "READ_VDIS",
 		.type = SD_OP_TYPE_LOCAL,
-		.force = 1,
+		.force = true,
 		.process_main = local_read_vdis,
 	},
 
 	[SD_OP_GET_VDI_COPIES] = {
 		.name = "GET_VDI_COPIES",
 		.type = SD_OP_TYPE_LOCAL,
-		.force = 1,
+		.force = true,
 		.process_main = local_get_vdi_copies,
 	},
 
 	[SD_OP_GET_NODE_LIST] = {
 		.name = "GET_NODE_LIST",
 		.type = SD_OP_TYPE_LOCAL,
-		.force = 1,
+		.force = true,
 		.process_main = local_get_node_list,
 	},
 
@@ -1023,7 +1036,7 @@ static struct sd_op_template sd_ops[] = {
 	[SD_OP_STAT_CLUSTER] = {
 		.name = "STAT_CLUSTER",
 		.type = SD_OP_TYPE_LOCAL,
-		.force = 1,
+		.force = true,
 		.process_work = local_stat_cluster,
 	},
 
@@ -1042,7 +1055,7 @@ static struct sd_op_template sd_ops[] = {
 	[SD_OP_GET_SNAP_FILE] = {
 		.name = "GET_SNAP_FILE",
 		.type = SD_OP_TYPE_LOCAL,
-		.force = 1,
+		.force = true,
 		.process_work = local_get_snap_file,
 	},
 
@@ -1061,21 +1074,21 @@ static struct sd_op_template sd_ops[] = {
 	[SD_OP_TRACE] = {
 		.name = "TRACE",
 		.type = SD_OP_TYPE_LOCAL,
-		.force = 1,
+		.force = true,
 		.process_main = local_trace_ops,
 	},
 
 	[SD_OP_TRACE_READ_BUF] = {
 		.name = "TRACE_READ_BUF",
 		.type = SD_OP_TYPE_LOCAL,
-		.force = 1,
+		.force = true,
 		.process_work = local_trace_read_buf,
 	},
 
 	[SD_OP_KILL_NODE] = {
 		.name = "KILL_NODE",
 		.type = SD_OP_TYPE_LOCAL,
-		.force = 1,
+		.force = true,
 		.process_main = local_kill_node,
 	},
 
@@ -1172,37 +1185,37 @@ const char *op_name(struct sd_op_template *op)
 	return op->name;
 }
 
-int is_cluster_op(struct sd_op_template *op)
+bool is_cluster_op(struct sd_op_template *op)
 {
 	return op->type == SD_OP_TYPE_CLUSTER;
 }
 
-int is_local_op(struct sd_op_template *op)
+bool is_local_op(struct sd_op_template *op)
 {
 	return op->type == SD_OP_TYPE_LOCAL;
 }
 
-int is_peer_op(struct sd_op_template *op)
+bool is_peer_op(struct sd_op_template *op)
 {
 	return op->type == SD_OP_TYPE_PEER;
 }
 
-int is_gateway_op(struct sd_op_template *op)
+bool is_gateway_op(struct sd_op_template *op)
 {
 	return op->type == SD_OP_TYPE_GATEWAY;
 }
 
-int is_force_op(struct sd_op_template *op)
+bool is_force_op(struct sd_op_template *op)
 {
 	return !!op->force;
 }
 
-int has_process_work(struct sd_op_template *op)
+bool has_process_work(struct sd_op_template *op)
 {
 	return !!op->process_work;
 }
 
-int has_process_main(struct sd_op_template *op)
+bool has_process_main(struct sd_op_template *op)
 {
 	return !!op->process_main;
 }

@@ -8,7 +8,6 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -21,10 +20,11 @@
 #include <fcntl.h>
 
 #include "sheep_priv.h"
+#include "util.h"
 
 static void requeue_request(struct request *req);
 
-static int is_access_local(struct request *req, uint64_t oid)
+static bool is_access_local(struct request *req, uint64_t oid)
 {
 	struct sd_vnode *obj_vnodes[SD_MAX_COPIES];
 	int nr_copies;
@@ -36,10 +36,10 @@ static int is_access_local(struct request *req, uint64_t oid)
 
 	for (i = 0; i < nr_copies; i++) {
 		if (vnode_is_local(obj_vnodes[i]))
-			return 1;
+			return true;
 	}
 
-	return 0;
+	return false;
 }
 
 static void io_op_done(struct work *work)
@@ -338,7 +338,7 @@ static void queue_request(struct request *req)
 			goto done;
 		}
 	} else if (hdr->proto_ver) {
-		if (hdr->proto_ver != SD_PROTO_VER) {
+		if (hdr->proto_ver > SD_PROTO_VER) {
 			rsp->result = SD_RES_VER_MISMATCH;
 			goto done;
 		}
@@ -433,7 +433,7 @@ static struct request *alloc_local_request(void *data, int data_length)
 		req->data = data;
 	}
 
-	req->local = 1;
+	req->local = true;
 
 	INIT_LIST_HEAD(&req->request_list);
 
@@ -475,6 +475,9 @@ again:
 		eprintf("%m\n");
 		goto again;
 	}
+
+	/* fill rq with response header as exec_req does */
+	memcpy(rq, &req->rp, sizeof(req->rp));
 
 	close(req->wait_efd);
 	ret = req->rp.result;
@@ -528,10 +531,9 @@ void put_request(struct request *req)
 	if (uatomic_sub_return(&req->refcnt, 1) > 0)
 		return;
 
-	if (req->local) {
-		req->done = 1;
+	if (req->local)
 		eventfd_write(req->wait_efd, value);
-	} else {
+	else {
 		if (conn_tx_on(&ci->conn)) {
 			clear_client_info(ci);
 			free_request(req);
@@ -876,9 +878,9 @@ static int create_listen_port_fn(int fd, void *data)
 	return register_event(fd, listen_handler, data);
 }
 
-int create_listen_port(int port, void *data)
+int create_listen_port(char *bindaddr, int port, void *data)
 {
-	return create_listen_ports(port, create_listen_port_fn, data);
+	return create_listen_ports(bindaddr, port, create_listen_port_fn, data);
 }
 
 static void req_handler(int listen_fd, int events, void *data)

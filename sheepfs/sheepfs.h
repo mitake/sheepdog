@@ -31,7 +31,7 @@ extern int sheepfs_set_op(const char *path, unsigned opcode);
 typedef void (*printf_fn)(const char *func, int line, const char *, ...)
 __attribute__ ((format (__printf__, 3, 4)));
 
-printf_fn fs_printf;
+extern printf_fn fs_printf;
 
 #define sheepfs_pr(fmt, args...)			\
 ({							\
@@ -48,7 +48,7 @@ extern int shadow_file_setxattr(const char *path, const char *name,
 extern int shadow_file_getxattr(const char *path, const char *name,
 				void *value, size_t size);
 extern int shadow_file_delete(const char *path);
-extern int shadow_file_exsit(const char *path);
+extern bool shadow_file_exsit(const char *path);
 
 /* volume.c */
 extern int create_volume_layout(void);

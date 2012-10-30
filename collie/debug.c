@@ -77,7 +77,6 @@ static int trace_read_buffer(void)
 	int fd, ret, tfd;
 	struct sd_req hdr;
 	struct sd_rsp *rsp = (struct sd_rsp *)&hdr;
-	unsigned rlen, wlen;
 #define TRACE_BUF_LEN      (1024 * 1024 * 20)
 	char *buf = xzalloc(TRACE_BUF_LEN);
 
@@ -93,11 +92,9 @@ static int trace_read_buffer(void)
 
 read_buffer:
 	sd_init_req(&hdr, SD_OP_TRACE_READ_BUF);
-	hdr.data_length = rlen = TRACE_BUF_LEN;
-	hdr.epoch = sd_epoch;
+	hdr.data_length = TRACE_BUF_LEN;
 
-	wlen = 0;
-	ret = exec_req(fd, &hdr, buf, &wlen, &rlen);
+	ret = exec_req(fd, &hdr, buf);
 
 	if (ret) {
 		fprintf(stderr, "Failed to connect\n");
@@ -115,8 +112,8 @@ read_buffer:
 		return EXIT_FAILURE;
 	}
 
-	xwrite(tfd, buf, rlen);
-	if (rlen == TRACE_BUF_LEN) {
+	xwrite(tfd, buf, rsp->data_length);
+	if (rsp->data_length == TRACE_BUF_LEN) {
 		memset(buf, 0, TRACE_BUF_LEN);
 		goto read_buffer;
 	}
@@ -133,7 +130,6 @@ static int trace_start(int argc, char **argv)
 	struct sd_rsp *rsp = (struct sd_rsp *)&hdr;
 
 	sd_init_req(&hdr, SD_OP_TRACE);
-	hdr.epoch = sd_epoch;
 	hdr.data_length = 1;
 
 	ret = send_light_req(&hdr, sdhost, sdport);
@@ -153,7 +149,6 @@ static int trace_stop(int argc, char **argv)
 	struct sd_rsp *rsp = (struct sd_rsp *)&hdr;
 
 	sd_init_req(&hdr, SD_OP_TRACE);
-	hdr.epoch = sd_epoch;
 	hdr.data_length = 0;
 
 	ret = send_light_req(&hdr, sdhost, sdport);

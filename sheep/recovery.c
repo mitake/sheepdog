@@ -60,24 +60,23 @@ static int obj_cmp(const void *oid1, const void *oid2)
 	return 0;
 }
 
-static int recover_object_from_replica(uint64_t oid, struct sd_vnode *vnode,
+static int recover_object_from_replica(uint64_t oid,
+				       const struct sd_vnode *vnode,
 				       uint32_t epoch, uint32_t tgt_epoch)
 {
 	struct sd_req hdr;
 	struct sd_rsp *rsp = (struct sd_rsp *)&hdr;
-	unsigned wlen = 0, rlen;
+	unsigned rlen;
 	int ret = SD_RES_NO_MEM;
 	void *buf = NULL;
 	struct siocb iocb = { 0 };
 
-	rlen = get_objsize(oid);
 	if (vnode_is_local(vnode)) {
-		iocb.epoch = epoch;
-		iocb.length = rlen;
-		ret = sd_store->link(oid, &iocb, tgt_epoch);
+		ret = sd_store->link(oid, tgt_epoch);
 		goto out;
 	}
 
+	rlen = get_objsize(oid);
 	buf = valloc(rlen);
 	if (!buf) {
 		eprintf("%m\n");
@@ -91,11 +90,11 @@ static int recover_object_from_replica(uint64_t oid, struct sd_vnode *vnode,
 	hdr.obj.oid = oid;
 	hdr.obj.tgt_epoch = tgt_epoch;
 
-	ret = sheep_exec_req(&vnode->nid, &hdr, buf, &wlen, &rlen);
+	ret = sheep_exec_req(&vnode->nid, &hdr, buf);
 	if (ret != SD_RES_SUCCESS)
 		goto out;
 	iocb.epoch = epoch;
-	iocb.length = rlen;
+	iocb.length = rsp->data_length;
 	iocb.offset = rsp->obj.offset;
 	iocb.buf = buf;
 	ret = sd_store->create_and_write(oid, &iocb);
@@ -113,8 +112,8 @@ out:
  * A virtual node that does not match any node in current node list
  * means the node has left the cluster, then it's an invalid virtual node.
  */
-static bool is_invalid_vnode(struct sd_vnode *entry, struct sd_node *nodes,
-			     int nr_nodes)
+static bool is_invalid_vnode(const struct sd_vnode *entry,
+			     struct sd_node *nodes, int nr_nodes)
 {
 	if (bsearch(entry, nodes, nr_nodes, sizeof(struct sd_node),
 		    node_id_cmp))
@@ -143,9 +142,9 @@ again:
 	/* Let's do a breadth-first search */
 	nr_copies = get_obj_copy_number(oid, old->nr_zones);
 	for (i = 0; i < nr_copies; i++) {
-		struct sd_vnode *tgt_vnode = oid_to_vnode(old->vnodes,
-							  old->nr_vnodes,
-							  oid, i);
+		const struct sd_vnode *tgt_vnode;
+
+		tgt_vnode = oid_to_vnode(old->vnodes,old->nr_vnodes, oid, i);
 
 		if (is_invalid_vnode(tgt_vnode, rw->cur_vinfo->nodes,
 				     rw->cur_vinfo->nr_nodes))
@@ -226,7 +225,7 @@ static inline void prepare_schedule_oid(uint64_t oid)
 	int i;
 
 	for (i = 0; i < rw->nr_prio_oids; i++)
-		if (rw->prio_oids[i] == oid )
+		if (rw->prio_oids[i] == oid)
 			return;
 	/*
 	 * We need this check because oid might not be recovered.
@@ -320,7 +319,7 @@ static void notify_recovery_completion_work(struct work *work)
 	int ret;
 
 	sd_init_req(&hdr, SD_OP_COMPLETE_RECOVERY);
-	hdr.epoch = rw->epoch;
+	hdr.obj.tgt_epoch = rw->epoch;
 	hdr.flags = SD_FLAG_CMD_WRITE;
 	hdr.data_length = sizeof(sys->this_node);
 
@@ -456,7 +455,7 @@ static void recover_object_main(struct work *work)
 		return;
 	}
 
-	if (rw->stop){
+	if (rw->stop) {
 		/*
 		 * Stop this recovery process and wait for epoch to be
 		 * lifted and flush wait_obj queue to requeue those
@@ -507,7 +506,6 @@ static void finish_object_list(struct work *work)
 static int fetch_object_list(struct sd_node *e, uint32_t epoch,
 			     uint8_t *buf, size_t buf_size)
 {
-	unsigned wlen, rlen;
 	char name[128];
 	struct sd_list_req hdr;
 	struct sd_list_rsp *rsp = (struct sd_list_rsp *)&hdr;
@@ -517,15 +515,11 @@ static int fetch_object_list(struct sd_node *e, uint32_t epoch,
 
 	dprintf("%s %"PRIu32"\n", name, e->nid.port);
 
-	wlen = 0;
-	rlen = buf_size;
-
 	sd_init_req((struct sd_req *)&hdr, SD_OP_GET_OBJ_LIST);
 	hdr.tgt_epoch = epoch - 1;
-	hdr.flags = 0;
-	hdr.data_length = rlen;
+	hdr.data_length = buf_size;
 
-	ret = sheep_exec_req(&e->nid, (struct sd_req *)&hdr, buf, &wlen, &rlen);
+	ret = sheep_exec_req(&e->nid, (struct sd_req *)&hdr, buf);
 
 	if (ret != SD_RES_SUCCESS)
 		return -1;
@@ -539,7 +533,7 @@ static int fetch_object_list(struct sd_node *e, uint32_t epoch,
 static void screen_object_list(struct recovery_work *rw,
 			       uint64_t *oids, int nr_oids)
 {
-	struct sd_vnode *vnodes[SD_MAX_COPIES];
+	const struct sd_vnode *vnodes[SD_MAX_COPIES];
 	int old_count = rw->count;
 	int nr_objs;
 	int i, j;

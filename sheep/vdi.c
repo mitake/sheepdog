@@ -201,7 +201,7 @@ static int create_vdi_obj(struct vdi_iocb *iocb, uint32_t new_vid,
 	struct timeval tv;
 	int ret = SD_RES_NO_MEM;
 	unsigned long block_size = SD_DATA_OBJ_SIZE;
-	char *name = iocb->name;
+	const char *name = iocb->name;
 
 	new = zalloc(sizeof(*new));
 	if (!new) {
@@ -217,7 +217,7 @@ static int create_vdi_obj(struct vdi_iocb *iocb, uint32_t new_vid,
 		}
 	}
 
-	if (iocb->snapid && cur_vid != iocb->base_vid) {
+	if (iocb->create_snapshot && cur_vid != iocb->base_vid) {
 		cur = zalloc(SD_INODE_HEADER_SIZE);
 		if (!cur) {
 			eprintf("failed to allocate memory\n");
@@ -236,7 +236,7 @@ static int create_vdi_obj(struct vdi_iocb *iocb, uint32_t new_vid,
 
 	gettimeofday(&tv, NULL);
 
-	if (iocb->snapid) {
+	if (iocb->create_snapshot) {
 		if (cur_vid != iocb->base_vid) {
 			vprintf(SDOG_INFO, "tree snapshot %s %" PRIx32 " %" PRIx32 "\n",
 				name, cur_vid, iocb->base_vid);
@@ -282,7 +282,7 @@ static int create_vdi_obj(struct vdi_iocb *iocb, uint32_t new_vid,
 		}
 	}
 
-	if (iocb->snapid && cur_vid != iocb->base_vid) {
+	if (iocb->create_snapshot && cur_vid != iocb->base_vid) {
 		ret = write_object(vid_to_vdi_oid(cur_vid), (char *)cur,
 				   SD_INODE_HEADER_SIZE, 0, 0, false, 0);
 		if (ret != 0) {
@@ -314,10 +314,11 @@ out:
 	return ret;
 }
 
-static int find_first_vdi(unsigned long start, unsigned long end, char *name,
-			  char *tag, uint32_t snapid, uint32_t *vid,
-			  unsigned long *deleted_nr, uint32_t *next_snap,
-			  unsigned int *inode_nr_copies, uint64_t *create_time)
+static int find_first_vdi(unsigned long start, unsigned long end,
+			  const char *name, const char *tag, uint32_t snapid,
+			  uint32_t *vid, unsigned long *deleted_nr,
+			  uint32_t *next_snap, unsigned int *inode_nr_copies,
+			  uint64_t *create_time)
 {
 	struct sheepdog_inode *inode = NULL;
 	unsigned long i;
@@ -346,6 +347,11 @@ static int find_first_vdi(unsigned long start, unsigned long end, char *name,
 		}
 
 		if (!strncmp(inode->name, name, strlen(inode->name))) {
+			*next_snap = inode->snap_id + 1;
+
+			if (!(tag && tag[0]) && !snapid && inode->snap_ctime)
+				break;
+
 			vdi_found = true;
 			if (tag && tag[0] &&
 			    strncmp(inode->tag, tag, sizeof(inode->tag)) != 0)
@@ -353,7 +359,6 @@ static int find_first_vdi(unsigned long start, unsigned long end, char *name,
 			if (snapid && snapid != inode->snap_id)
 				continue;
 
-			*next_snap = inode->snap_id + 1;
 			*vid = inode->vdi_id;
 			*inode_nr_copies = inode->nr_copies;
 			if (create_time)
@@ -374,10 +379,11 @@ out:
 	return ret;
 }
 
-static int do_lookup_vdi(char *name, int namelen, uint32_t *vid, char *tag,
-		uint32_t snapid, uint32_t *next_snapid, unsigned long *right_nr,
-		unsigned long *deleted_nr, unsigned int *nr_copies,
-		uint64_t *create_time)
+static int do_lookup_vdi(const char *name, int namelen, uint32_t *vid,
+			 const char *tag, uint32_t snapid,
+			 uint32_t *next_snapid, unsigned long *right_nr,
+			 unsigned long *deleted_nr, unsigned int *nr_copies,
+			 uint64_t *create_time)
 {
 	int ret;
 	unsigned long nr, start_nr;
@@ -392,7 +398,7 @@ static int do_lookup_vdi(char *name, int namelen, uint32_t *vid, char *tag,
 	if (nr == start_nr) {
 		return SD_RES_NO_VDI;
 	} else if (nr < SD_NR_VDIS) {
-	right_side:
+right_side:
 		/* look up on the right side of the hash point */
 		ret = find_first_vdi(nr - 1, start_nr, name,
 				     tag, snapid, vid, deleted_nr, next_snapid,
@@ -421,8 +427,8 @@ static int do_lookup_vdi(char *name, int namelen, uint32_t *vid, char *tag,
 	}
 }
 
-int lookup_vdi(char *name, char *tag, uint32_t *vid, uint32_t snapid,
-	       unsigned int *nr_copies, uint64_t *create_time)
+int lookup_vdi(const char *name, const char *tag, uint32_t *vid,
+	       uint32_t snapid, unsigned int *nr_copies, uint64_t *create_time)
 {
 	uint32_t dummy0;
 	unsigned long dummy1, dummy2;
@@ -435,11 +441,11 @@ int lookup_vdi(char *name, char *tag, uint32_t *vid, uint32_t snapid,
 int add_vdi(struct vdi_iocb *iocb, uint32_t *new_vid)
 {
 	uint32_t cur_vid = 0;
-	uint32_t next_snapid;
+	uint32_t next_snapid = 1;
 	unsigned long nr, deleted_nr = SD_NR_VDIS, right_nr = SD_NR_VDIS;
 	unsigned int dummy;
 	int ret;
-	char *name;
+	const char *name;
 
 	if (iocb->data_len != SD_MAX_VDI_LEN)
 		return SD_RES_INVALID_PARMS;
@@ -450,7 +456,7 @@ int add_vdi(struct vdi_iocb *iocb, uint32_t *new_vid)
 			    NULL, 0, &next_snapid, &right_nr, &deleted_nr,
 			    &dummy, NULL);
 
-	if (iocb->snapid) {
+	if (iocb->create_snapshot) {
 		if (ret != SD_RES_SUCCESS) {
 			if (ret == SD_RES_NO_VDI)
 				vprintf(SDOG_CRIT, "VDI %s does not exist\n", name);
@@ -469,15 +475,13 @@ int add_vdi(struct vdi_iocb *iocb, uint32_t *new_vid)
 			nr = right_nr;
 		else
 			nr = deleted_nr; /* we can recycle a deleted VDI */
-
-		next_snapid = 1;
 	}
 
 	*new_vid = nr;
 
 	vprintf(SDOG_INFO, "creating new %s %s: size %" PRIu64 ", vid %"
 		PRIx32 ", base %" PRIx32 ", cur %" PRIx32 ", copies %d\n",
-		iocb->snapid ? "snapshot" : "vdi", name, iocb->size,
+		iocb->create_snapshot ? "snapshot" : "vdi", name, iocb->size,
 		*new_vid, iocb->base_vid, cur_vid, iocb->nr_copies);
 
 	return create_vdi_obj(iocb, *new_vid, cur_vid, next_snapid);
@@ -488,7 +492,7 @@ static int start_deletion(struct request *req, uint32_t vid);
 int del_vdi(struct request *req, char *data, int data_len,
 	    uint32_t *vid, uint32_t snapid, unsigned int *nr_copies)
 {
-	char *name = data, *tag;
+	const char *name = data, *tag;
 	uint32_t dummy0;
 	unsigned long dummy1, dummy2;
 	int ret;

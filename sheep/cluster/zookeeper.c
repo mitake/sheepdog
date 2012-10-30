@@ -531,7 +531,8 @@ static int leave_event(zhandle_t *zh, struct zk_node *znode)
 	return 0;
 }
 
-static void watcher(zhandle_t *zh, int type, int state, const char *path, void* ctx)
+static void watcher(zhandle_t *zh, int type, int state, const char *path,
+		    void *ctx)
 {
 	eventfd_t value = 1;
 	const clientid_t *cid;
@@ -577,7 +578,7 @@ static void watcher(zhandle_t *zh, int type, int state, const char *path, void* 
 	eventfd_write(efd, value);
 }
 
-static int zk_join(struct sd_node *myself,
+static int zk_join(const struct sd_node *myself,
 		   void *opaque, size_t opaque_len)
 {
 	int rc;

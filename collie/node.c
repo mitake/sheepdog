@@ -11,9 +11,9 @@
 
 #include "collie.h"
 
-static void cal_total_vdi_size(uint32_t vid, char *name, char * tag,
+static void cal_total_vdi_size(uint32_t vid, const char *name, const char *tag,
 			       uint32_t snapid, uint32_t flags,
-			       struct sheepdog_inode *i, void *data)
+			       const struct sheepdog_inode *i, void *data)
 {
 	uint64_t *size = data;
 
@@ -68,7 +68,6 @@ static int node_info(int argc, char **argv)
 		addr_to_str(host, sizeof(host), sd_nodes[i].nid.addr, 0);
 
 		sd_init_req((struct sd_req *)&req, SD_OP_STAT_SHEEP);
-		req.epoch = sd_epoch;
 
 		ret = send_light_req((struct sd_req *)&req, host,
 				     sd_nodes[i].nid.port);
@@ -145,7 +144,6 @@ static int node_cache(int argc, char **argv)
 	char *p;
 	int fd, ret;
 	uint32_t cache_size;
-	unsigned int wlen, rlen = 0;
 	struct sd_req hdr;
 	struct sd_rsp *rsp = (struct sd_rsp *)&hdr;
 
@@ -159,13 +157,11 @@ static int node_cache(int argc, char **argv)
 	if (fd < 0)
 		return EXIT_FAILURE;
 
-	wlen = sizeof(cache_size);
-
 	sd_init_req(&hdr, SD_OP_SET_CACHE_SIZE);
 	hdr.flags = SD_FLAG_CMD_WRITE;
-	hdr.data_length = wlen;
+	hdr.data_length = sizeof(cache_size);
 
-	ret = exec_req(fd, &hdr, (void *)&cache_size, &wlen, &rlen);
+	ret = exec_req(fd, &hdr, (void *)&cache_size);
 	close(fd);
 
 	if (ret) {
@@ -212,7 +208,7 @@ static int node_kill(int argc, char **argv)
 
 static struct subcommand node_cmd[] = {
 	{"kill", "<node id>", "aprh", "kill node", NULL,
-	 SUBCMD_FLAG_NEED_THIRD_ARG, node_kill},
+	 SUBCMD_FLAG_NEED_THIRD_ARG | SUBCMD_FLAG_NEED_NODELIST, node_kill},
 	{"list", NULL, "aprh", "list nodes", NULL,
 	 SUBCMD_FLAG_NEED_NODELIST, node_list},
 	{"info", NULL, "aprh", "show information about each node", NULL,

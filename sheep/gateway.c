@@ -31,11 +31,10 @@ static inline void gateway_init_fwd_hdr(struct sd_req *fwd, struct sd_req *hdr)
 int gateway_read_obj(struct request *req)
 {
 	int i, ret = SD_RES_SUCCESS;
-	unsigned wlen, rlen;
 	struct sd_req fwd_hdr;
 	struct sd_rsp *rsp = (struct sd_rsp *)&fwd_hdr;
-	struct sd_vnode *v;
-	struct sd_vnode *obj_vnodes[SD_MAX_COPIES];
+	const struct sd_vnode *v;
+	const struct sd_vnode *obj_vnodes[SD_MAX_COPIES];
 	uint64_t oid = req->rq.obj.oid;
 	int nr_copies, j;
 
@@ -76,10 +75,7 @@ int gateway_read_obj(struct request *req)
 		 * structure.
 		 */
 		gateway_init_fwd_hdr(&fwd_hdr, &req->rq);
-		wlen = 0;
-		rlen = fwd_hdr.data_length;
-		ret = sheep_exec_req(&v->nid, &fwd_hdr, req->data, &wlen,
-				     &rlen);
+		ret = sheep_exec_req(&v->nid, &fwd_hdr, req->data);
 		if (ret != SD_RES_SUCCESS)
 			continue;
 
@@ -101,7 +97,7 @@ out:
 
 struct write_info_entry {
 	struct pollfd pfd;
-	struct node_id *nid;
+	const struct node_id *nid;
 	struct sockfd *sfd;
 };
 
@@ -212,16 +208,16 @@ finish_write:
 	return err_ret;
 }
 
-static inline void write_info_init(struct write_info *wi)
+static inline void write_info_init(struct write_info *wi, size_t nr_to_send)
 {
 	int i;
-	for (i = 0; i < SD_MAX_NODES; i++)
+	for (i = 0; i < nr_to_send; i++)
 		wi->ent[i].pfd.fd = -1;
 	wi->nr_sent = 0;
 }
 
 static inline void
-write_info_advance(struct write_info *wi, struct node_id *nid,
+write_info_advance(struct write_info *wi, const struct node_id *nid,
 		   struct sockfd *sfd)
 {
 	wi->ent[wi->nr_sent].nid = nid;
@@ -232,10 +228,10 @@ write_info_advance(struct write_info *wi, struct node_id *nid,
 }
 
 static int init_target_nodes(struct request *req, bool all_node,
-			uint64_t oid, struct sd_node **target_nodes)
+			     uint64_t oid, const struct sd_node **target_nodes)
 {
 	int i, nr_to_send;
-	struct vnode_info *vinfo = req->vinfo;
+	const struct vnode_info *vinfo = req->vinfo;
 
 	if (all_node) {
 		nr_to_send = vinfo->nr_nodes;
@@ -259,22 +255,22 @@ static int gateway_forward_request(struct request *req, bool all_node)
 	uint64_t oid = req->rq.obj.oid;
 	int nr_to_send;
 	struct write_info wi;
-	struct sd_op_template *op;
+	const struct sd_op_template *op;
 	struct sd_req hdr;
-	struct sd_node *target_nodes[SD_MAX_NODES];
+	const struct sd_node *target_nodes[SD_MAX_NODES];
 
 	dprintf("%"PRIx64"\n", oid);
 
 	gateway_init_fwd_hdr(&hdr, &req->rq);
 	op = get_sd_op(hdr.opcode);
 
-	write_info_init(&wi);
 	wlen = hdr.data_length;
 	nr_to_send = init_target_nodes(req, all_node, oid, target_nodes);
+	write_info_init(&wi, nr_to_send);
 
 	for (i = 0; i < nr_to_send; i++) {
 		struct sockfd *sfd;
-		struct node_id *nid;
+		const struct node_id *nid;
 
 		if (node_is_local(target_nodes[i])) {
 			local = i;
@@ -288,7 +284,7 @@ static int gateway_forward_request(struct request *req, bool all_node)
 			break;
 		}
 
-		ret = send_req(sfd->fd, &hdr, req->data, &wlen);
+		ret = send_req(sfd->fd, &hdr, req->data, wlen);
 		if (ret) {
 			sheep_del_sockfd(nid, sfd);
 			err_ret = SD_RES_NETWORK_ERROR;

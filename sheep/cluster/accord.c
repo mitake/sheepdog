@@ -310,7 +310,7 @@ static bool need_cleanup;
 static void acrd_join_fn(struct acrd_handle *ah, const uint64_t *member_list,
 			 size_t member_list_entries, uint64_t nodeid, void *arg)
 {
-	static bool init = false;
+	static bool init;
 
 	if (!init) {
 		this_id = nodeid;
@@ -407,7 +407,7 @@ static void acrd_watch_fn(struct acrd_handle *ah, struct acrd_watch_info *info,
 	eventfd_write(efd, value);
 }
 
-static int accord_join(struct sd_node *myself,
+static int accord_join(const struct sd_node *myself,
 		       void *opaque, size_t opaque_len)
 {
 	this_node = *myself;

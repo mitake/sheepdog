@@ -26,7 +26,7 @@ static void requeue_request(struct request *req);
 
 static bool is_access_local(struct request *req, uint64_t oid)
 {
-	struct sd_vnode *obj_vnodes[SD_MAX_COPIES];
+	const struct sd_vnode *obj_vnodes[SD_MAX_COPIES];
 	int nr_copies;
 	int i;
 
@@ -709,17 +709,17 @@ static inline int finish_tx(struct client_info *ci)
 
 static void do_client_tx(struct client_info *ci)
 {
-	if (list_empty(&ci->done_reqs)) {
+	if (!ci->tx_req && list_empty(&ci->done_reqs)) {
 		if (conn_tx_off(&ci->conn))
 			clear_client_info(ci);
 		return;
 	}
-again:
+
 	if (begin_tx(ci) < 0)
 		return;
 
 	if (finish_tx(ci))
-		goto again;
+		return;
 
 	/* Let's go sleep, and put_request() will wake me up */
 	if (conn_tx_off(&ci->conn))

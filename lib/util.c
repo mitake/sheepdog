@@ -55,10 +55,7 @@ void *xmalloc(size_t size)
 
 void *xzalloc(size_t size)
 {
-	void *ret;
-	ret = xmalloc(size);
-	memset(ret, 0, size);
-	return ret;
+	return xcalloc(1, size);
 }
 
 notrace void *xrealloc(void *ptr, size_t size)
@@ -303,5 +300,5 @@ void set_trimmed_sectors(void *buf, uint64_t offset, uint32_t len,
 	}
 
 	if (offset + len < requested_len)
-		memset(p + offset + len, 0, requested_len- offset - len);
+		memset(p + offset + len, 0, requested_len - offset - len);
 }

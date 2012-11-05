@@ -64,7 +64,7 @@ struct zk_event {
 	uint8_t buf[SD_MAX_EVENT_BUF_SIZE];
 };
 
-static int zk_notify_blocked;
+static uatomic_bool zk_notify_blocked;
 
 /* leave event circular array */
 static struct zk_event zk_levents[SD_MAX_NODES];
@@ -286,7 +286,7 @@ static int zk_queue_pop(zhandle_t *zh, struct zk_event *ev)
 		return 0;
 	}
 
-	if (!called_by_zk_unblock && uatomic_read(&zk_notify_blocked) > 0)
+	if (!called_by_zk_unblock && uatomic_is_true(&zk_notify_blocked))
 		return -1;
 
 	if (zk_queue_empty(zh))
@@ -531,7 +531,8 @@ static int leave_event(zhandle_t *zh, struct zk_node *znode)
 	return 0;
 }
 
-static void watcher(zhandle_t *zh, int type, int state, const char *path, void* ctx)
+static void watcher(zhandle_t *zh, int type, int state, const char *path,
+		    void *ctx)
 {
 	eventfd_t value = 1;
 	const clientid_t *cid;
@@ -577,7 +578,7 @@ static void watcher(zhandle_t *zh, int type, int state, const char *path, void* 
 	eventfd_write(efd, value);
 }
 
-static int zk_join(struct sd_node *myself,
+static int zk_join(const struct sd_node *myself,
 		   void *opaque, size_t opaque_len)
 {
 	int rc;
@@ -638,7 +639,7 @@ static void zk_unblock(void *msg, size_t msg_len)
 
 	zk_queue_push_back(zhandle, &ev);
 
-	uatomic_dec(&zk_notify_blocked);
+	uatomic_set_false(&zk_notify_blocked);
 
 	/* this notify is necessary */
 	dprintf("write event to efd:%d\n", efd);
@@ -777,8 +778,10 @@ static void zk_handler(int listen_fd, int events, void *data)
 	case EVENT_BLOCK:
 		dprintf("BLOCK\n");
 		zk_queue_push_back(zhandle, NULL);
-		if (sd_block_handler(&ev.sender.node))
-			uatomic_inc(&zk_notify_blocked);
+		if (sd_block_handler(&ev.sender.node)) {
+			bool result = uatomic_set_true(&zk_notify_blocked);
+			assert(result);
+		}
 		break;
 	case EVENT_NOTIFY:
 		dprintf("NOTIFY\n");

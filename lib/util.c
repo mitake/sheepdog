@@ -55,10 +55,7 @@ void *xmalloc(size_t size)
 
 void *xzalloc(size_t size)
 {
-	void *ret;
-	ret = xmalloc(size);
-	memset(ret, 0, size);
-	return ret;
+	return xcalloc(1, size);
 }
 
 notrace void *xrealloc(void *ptr, size_t size)
@@ -219,6 +216,33 @@ ssize_t xpwrite(int fd, const void *buf, size_t count, off_t offset)
 	return total;
 }
 
+/**
+ * Copy the string str to buf. If str length is bigger than buf_size -
+ * 1 then it is clamped to buf_size - 1.
+ * NOTE: this function does what strncpy should have done to be
+ * useful. NEVER use strncpy.
+ *
+ * @param buf destination buffer
+ * @param buf_size size of destination buffer
+ * @param str source string
+ */
+void pstrcpy(char *buf, int buf_size, const char *str)
+{
+	int c;
+	char *q = buf;
+
+	if (buf_size <= 0)
+		return;
+
+	while (true) {
+		c = *str++;
+		if (c == 0 || q >= buf + buf_size - 1)
+			break;
+		*q++ = c;
+	}
+	*q = '\0';
+}
+
 /* remove directory recursively */
 int rmdir_r(char *dir_path)
 {
@@ -303,5 +327,5 @@ void set_trimmed_sectors(void *buf, uint64_t offset, uint32_t len,
 	}
 
 	if (offset + len < requested_len)
-		memset(p + offset + len, 0, requested_len- offset - len);
+		memset(p + offset + len, 0, requested_len - offset - len);
 }

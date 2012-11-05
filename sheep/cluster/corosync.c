@@ -263,7 +263,7 @@ eq_check:
 	return -1;
 }
 
-static void build_node_list(struct cpg_node *nodes, size_t nr_nodes,
+static void build_node_list(const struct cpg_node *nodes, size_t nr_nodes,
 			    struct sd_node *entries)
 {
 	int i;
@@ -520,9 +520,9 @@ static void cdrv_cpg_deliver(cpg_handle_t handle,
 
 		master = is_master(&cmsg->sender);
 		if (master >= 0)
-		/* Master is down before new nodes finish joining.
-		 * We have to revoke its mastership to avoid cluster hanging
-		 */
+			/* Master is down before new nodes finish joining.
+			 * We have to revoke its mastership to avoid cluster
+			 * hanging */
 			cpg_nodes[master].gone = 1;
 
 		cevent->sender = cmsg->sender;
@@ -681,7 +681,7 @@ static void cdrv_cpg_confchg(cpg_handle_t handle,
 	__corosync_dispatch();
 }
 
-static int corosync_join(struct sd_node *myself,
+static int corosync_join(const struct sd_node *myself,
 			 void *opaque, size_t opaque_len)
 {
 	int ret;

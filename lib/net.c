@@ -60,7 +60,7 @@ int conn_rx_on(struct connection *conn)
 	return modify_event(conn->fd, conn->events);
 }
 
-notrace bool is_conn_dead(struct connection *conn)
+notrace bool is_conn_dead(const struct connection *conn)
 {
 	if (conn->c_rx_state == C_IO_CLOSED || conn->c_tx_state == C_IO_CLOSED)
 		return true;
@@ -113,7 +113,7 @@ notrace int tx(struct connection *conn, enum conn_state next_state, int flags)
 	return ret;
 }
 
-int create_listen_ports(char *bindaddr, int port,
+int create_listen_ports(const char *bindaddr, int port,
 		int (*callback)(int fd, void *), void *data)
 {
 	char servname[64];
@@ -320,7 +320,7 @@ rewrite:
 	return 0;
 }
 
-int send_req(int sockfd, struct sd_req *hdr, void *data, unsigned int *wlen)
+int send_req(int sockfd, struct sd_req *hdr, void *data, unsigned int wlen)
 {
 	int ret;
 	struct msghdr msg;
@@ -334,27 +334,35 @@ int send_req(int sockfd, struct sd_req *hdr, void *data, unsigned int *wlen)
 	iov[0].iov_base = hdr;
 	iov[0].iov_len = sizeof(*hdr);
 
-	if (*wlen) {
+	if (wlen) {
 		msg.msg_iovlen++;
 		iov[1].iov_base = data;
-		iov[1].iov_len = *wlen;
+		iov[1].iov_len = wlen;
 	}
 
-	ret = do_write(sockfd, &msg, sizeof(*hdr) + *wlen);
+	ret = do_write(sockfd, &msg, sizeof(*hdr) + wlen);
 	if (ret) {
 		eprintf("failed to send request %x, %d: %m\n", hdr->opcode,
-			*wlen);
+			wlen);
 		ret = -1;
 	}
 
 	return ret;
 }
 
-int exec_req(int sockfd, struct sd_req *hdr, void *data,
-	     unsigned int *wlen, unsigned int *rlen)
+int exec_req(int sockfd, struct sd_req *hdr, void *data)
 {
 	int ret;
 	struct sd_rsp *rsp = (struct sd_rsp *)hdr;
+	unsigned int wlen, rlen;
+
+	if (hdr->flags & SD_FLAG_CMD_WRITE) {
+		wlen = hdr->data_length;
+		rlen = 0;
+	} else {
+		wlen = 0;
+		rlen = hdr->data_length;
+	}
 
 	if (send_req(sockfd, hdr, data, wlen))
 		return 1;
@@ -365,11 +373,11 @@ int exec_req(int sockfd, struct sd_req *hdr, void *data,
 		return 1;
 	}
 
-	if (*rlen > rsp->data_length)
-		*rlen = rsp->data_length;
+	if (rlen > rsp->data_length)
+		rlen = rsp->data_length;
 
-	if (*rlen) {
-		ret = do_read(sockfd, data, *rlen);
+	if (rlen) {
+		ret = do_read(sockfd, data, rlen);
 		if (ret) {
 			eprintf("failed to read the response data\n");
 			return 1;
@@ -379,7 +387,7 @@ int exec_req(int sockfd, struct sd_req *hdr, void *data,
 	return 0;
 }
 
-char *addr_to_str(char *str, int size, uint8_t *addr, uint16_t port)
+char *addr_to_str(char *str, int size, const uint8_t *addr, uint16_t port)
 {
 	int  af = AF_INET6;
 	int  addr_start_idx = 0;
@@ -387,7 +395,8 @@ char *addr_to_str(char *str, int size, uint8_t *addr, uint16_t port)
 	/* Find address family type */
 	if (addr[12]) {
 		int  oct_no = 0;
-		while (!addr[oct_no] && oct_no++ < 12 );
+		while (!addr[oct_no] && oct_no++ < 12)
+			;
 		if (oct_no == 12) {
 			af = AF_INET;
 			addr_start_idx = 12;

@@ -65,7 +65,7 @@ static int fds_count = DEFAULT_FDS_COUNT;
 
 struct sockfd_cache_fd {
 	int fd;
-	uint8_t in_use;
+	uatomic_bool in_use;
 };
 
 struct sockfd_cache_entry {
@@ -101,7 +101,7 @@ sockfd_cache_insert(struct sockfd_cache_entry *new)
 	return NULL; /* insert successfully */
 }
 
-static struct sockfd_cache_entry *sockfd_cache_search(struct node_id *nid)
+static struct sockfd_cache_entry *sockfd_cache_search(const struct node_id *nid)
 {
 	struct rb_node *n = sockfd_cache.root.rb_node;
 	struct sockfd_cache_entry *t;
@@ -128,7 +128,7 @@ static inline int get_free_slot(struct sockfd_cache_entry *entry)
 	int idx = -1, i;
 
 	for (i = 0; i < fds_count; i++) {
-		if (uatomic_cmpxchg(&entry->fds[i].in_use, 0, 1))
+		if (!uatomic_set_true(&entry->fds[i].in_use))
 			continue;
 		idx = i;
 		break;
@@ -141,7 +141,7 @@ static inline int get_free_slot(struct sockfd_cache_entry *entry)
  *
  * If no free slot available, this typically means we should use short FD.
  */
-static struct sockfd_cache_entry *sockfd_cache_grab(struct node_id *nid,
+static struct sockfd_cache_entry *sockfd_cache_grab(const struct node_id *nid,
 						    char *name, int *ret_idx)
 {
 	struct sockfd_cache_entry *entry;
@@ -165,7 +165,7 @@ static inline bool slots_all_free(struct sockfd_cache_entry *entry)
 {
 	int i;
 	for (i = 0; i < fds_count; i++)
-		if (uatomic_read(&entry->fds[i].in_use))
+		if (uatomic_is_true(&entry->fds[i].in_use))
 			return false;
 	return true;
 }
@@ -185,7 +185,7 @@ static inline void destroy_all_slots(struct sockfd_cache_entry *entry)
  * the victim node will finally find itself talking to a dead node and call
  * sheep_del_fd() to delete this node from the cache.
  */
-static bool sockfd_cache_destroy(struct node_id *nid)
+static bool sockfd_cache_destroy(const struct node_id *nid)
 {
 	struct sockfd_cache_entry *entry;
 
@@ -214,7 +214,7 @@ false_out:
 }
 
 /* When node craches, we should delete it from the cache */
-void sockfd_cache_del(struct node_id *nid)
+void sockfd_cache_del(const struct node_id *nid)
 {
 	char name[INET6_ADDRSTRLEN];
 	int n;
@@ -227,7 +227,7 @@ void sockfd_cache_del(struct node_id *nid)
 	dprintf("%s:%d, count %d\n", name, nid->port, n);
 }
 
-static void sockfd_cache_add_nolock(struct node_id *nid)
+static void sockfd_cache_add_nolock(const struct node_id *nid)
 {
 	struct sockfd_cache_entry *new = xmalloc(sizeof(*new));
 	int i;
@@ -245,9 +245,9 @@ static void sockfd_cache_add_nolock(struct node_id *nid)
 }
 
 /* Add group of nodes to the cache */
-void sockfd_cache_add_group(struct sd_node *nodes, int nr)
+void sockfd_cache_add_group(const struct sd_node *nodes, int nr)
 {
-	struct sd_node *p;
+	const struct sd_node *p;
 
 	dprintf("%d\n", nr);
 	pthread_rwlock_wrlock(&sockfd_cache.lock);
@@ -259,7 +259,7 @@ void sockfd_cache_add_group(struct sd_node *nodes, int nr)
 }
 
 /* Add one node to the cache means we can do caching tricks on this node */
-void sockfd_cache_add(struct node_id *nid)
+void sockfd_cache_add(const struct node_id *nid)
 {
 	struct sockfd_cache_entry *new;
 	char name[INET6_ADDRSTRLEN];
@@ -299,21 +299,21 @@ static void do_grow_fds(struct work *work)
 		entry->fds = xrealloc(entry->fds, new_size);
 		for (i = old_fds_count; i < new_fds_count; i++) {
 			entry->fds[i].fd = -1;
-			entry->fds[i].in_use = 0;
+			entry->fds[i].in_use = false;
 		}
 	}
 	pthread_rwlock_unlock(&sockfd_cache.lock);
 }
 
-static bool fds_in_grow;
+static uatomic_bool fds_in_grow;
 static int fds_high_watermark = DEFAULT_FDS_WATERMARK;
 
 static void grow_fds_done(struct work *work)
 {
-	fds_in_grow = false;
 	fds_count *= 2;
 	fds_high_watermark = fds_count * 3 / 4;
 	dprintf("fd count has been grown into %d\n", fds_count);
+	uatomic_set_false(&fds_in_grow);
 	free(work);
 }
 
@@ -323,17 +323,16 @@ static inline void check_idx(int idx)
 
 	if (idx <= fds_high_watermark)
 		return;
-	if (fds_in_grow)
+	if (!uatomic_set_true(&fds_in_grow))
 		return;
 
 	w = xmalloc(sizeof(*w));
 	w->fn = do_grow_fds;
 	w->done = grow_fds_done;
-	fds_in_grow = true;
 	queue_work(sys->sockfd_wqueue, w);
 }
 
-static struct sockfd *sockfd_cache_get(struct node_id *nid, char *name)
+static struct sockfd *sockfd_cache_get(const struct node_id *nid, char *name)
 {
 	struct sockfd_cache_entry *entry;
 	struct sockfd *sfd;
@@ -354,7 +353,7 @@ static struct sockfd *sockfd_cache_get(struct node_id *nid, char *name)
 	dprintf("create connection %s:%d idx %d\n", name, nid->port, idx);
 	fd = connect_to(name, nid->port);
 	if (fd < 0) {
-		uatomic_dec(&entry->fds[idx].in_use);
+		uatomic_set_false(&entry->fds[idx].in_use);
 		return NULL;
 	}
 	entry->fds[idx].fd = fd;
@@ -366,11 +365,10 @@ out:
 	return sfd;
 }
 
-static void sockfd_cache_put(struct node_id *nid, int idx)
+static void sockfd_cache_put(const struct node_id *nid, int idx)
 {
 	struct sockfd_cache_entry *entry;
 	char name[INET6_ADDRSTRLEN];
-	int refcnt;
 
 	addr_to_str(name, sizeof(name), nid->addr, 0);
 	dprintf("%s:%d idx %d\n", name, nid->port, idx);
@@ -380,8 +378,7 @@ static void sockfd_cache_put(struct node_id *nid, int idx)
 	pthread_rwlock_unlock(&sockfd_cache.lock);
 
 	assert(entry);
-	refcnt = uatomic_cmpxchg(&entry->fds[idx].in_use, 1, 0);
-	assert(refcnt == 1);
+	uatomic_set_false(&entry->fds[idx].in_use);
 }
 
 /*
@@ -393,7 +390,7 @@ static void sockfd_cache_put(struct node_id *nid, int idx)
  *
  * ret_idx is opaque to the caller, -1 indicates it is a short FD.
  */
-struct sockfd *sheep_get_sockfd(struct node_id *nid)
+struct sockfd *sheep_get_sockfd(const struct node_id *nid)
 {
 	char name[INET6_ADDRSTRLEN];
 	struct sockfd *sfd;
@@ -429,7 +426,7 @@ struct sockfd *sheep_get_sockfd(struct node_id *nid)
  * sheep_get_sockfd()
  */
 
-void sheep_put_sockfd(struct node_id *nid, struct sockfd *sfd)
+void sheep_put_sockfd(const struct node_id *nid, struct sockfd *sfd)
 {
 	if (sfd->idx == -1) {
 		dprintf("%d\n", sfd->fd);
@@ -449,7 +446,7 @@ void sheep_put_sockfd(struct node_id *nid, struct sockfd *sfd)
  * this vnode in the cache.
  * If it is a short FD, just close it.
  */
-void sheep_del_sockfd(struct node_id *nid, struct sockfd *sfd)
+void sheep_del_sockfd(const struct node_id *nid, struct sockfd *sfd)
 {
 	if (sfd->idx == -1) {
 		dprintf("%d\n", sfd->fd);
@@ -463,8 +460,7 @@ void sheep_del_sockfd(struct node_id *nid, struct sockfd *sfd)
 	free(sfd);
 }
 
-int sheep_exec_req(struct node_id *nid, struct sd_req *hdr, void *buf,
-		   unsigned int *wlen, unsigned int *rlen)
+int sheep_exec_req(const struct node_id *nid, struct sd_req *hdr, void *buf)
 {
 	struct sd_rsp *rsp = (struct sd_rsp *)hdr;
 	struct sockfd *sfd;
@@ -474,7 +470,7 @@ int sheep_exec_req(struct node_id *nid, struct sd_req *hdr, void *buf,
 	if (!sfd)
 		return SD_RES_NETWORK_ERROR;
 
-	ret = exec_req(sfd->fd, hdr, buf, wlen, rlen);
+	ret = exec_req(sfd->fd, hdr, buf);
 	if (ret) {
 		dprintf("remote node might have gone away\n");
 		sheep_del_sockfd(nid, sfd);

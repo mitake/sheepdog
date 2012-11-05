@@ -127,7 +127,7 @@ static int err_to_sderr(uint64_t oid, int err)
 	}
 }
 
-int default_write(uint64_t oid, struct siocb *iocb)
+int default_write(uint64_t oid, const struct siocb *iocb)
 {
 	int flags = get_open_flags(oid, false), fd, ret = SD_RES_SUCCESS;
 	char path[PATH_MAX];
@@ -214,7 +214,7 @@ static int init_objlist_and_vdi_bitmap(uint64_t oid, void *arg)
 	return SD_RES_SUCCESS;
 }
 
-int default_init(char *p)
+int default_init(const char *p)
 {
 	dprintf("use plain store driver\n");
 
@@ -230,8 +230,8 @@ int default_init(char *p)
 	return for_each_object_in_wd(init_objlist_and_vdi_bitmap, true, NULL);
 }
 
-static int default_read_from_path(uint64_t oid, char *path,
-				       struct siocb *iocb)
+static int default_read_from_path(uint64_t oid, const char *path,
+				  const struct siocb *iocb)
 {
 	int flags = get_open_flags(oid, false), fd, ret = SD_RES_SUCCESS;
 	ssize_t size;
@@ -254,7 +254,7 @@ static int default_read_from_path(uint64_t oid, char *path,
 	return ret;
 }
 
-int default_read(uint64_t oid, struct siocb *iocb)
+int default_read(uint64_t oid, const struct siocb *iocb)
 {
 	int ret;
 	char path[PATH_MAX];
@@ -292,7 +292,7 @@ int prealloc(int fd, uint32_t size)
 	return 0;
 }
 
-int default_create_and_write(uint64_t oid, struct siocb *iocb)
+int default_create_and_write(uint64_t oid, const struct siocb *iocb)
 {
 	char path[PATH_MAX], tmp_path[PATH_MAX];
 	int flags = get_open_flags(oid, true);
@@ -307,7 +307,7 @@ int default_create_and_write(uint64_t oid, struct siocb *iocb)
 
 	fd = open(tmp_path, flags, def_fmode);
 	if (fd < 0) {
-		if (errno == EEXIST)
+		if (errno == EEXIST) {
 			/* This happens if node membership changes during object
 			 * creation; while gateway retries a CREATE request,
 			 * recovery process could also recover the object at the
@@ -315,6 +315,7 @@ int default_create_and_write(uint64_t oid, struct siocb *iocb)
 			 * so it is okay to simply return success here. */
 			dprintf("%s exists\n", tmp_path);
 			return SD_RES_SUCCESS;
+		}
 
 		eprintf("failed to open %s: %m\n", tmp_path);
 		return err_to_sderr(oid, errno);
@@ -350,7 +351,7 @@ out:
 	return ret;
 }
 
-int default_link(uint64_t oid, struct siocb *iocb, uint32_t tgt_epoch)
+int default_link(uint64_t oid, uint32_t tgt_epoch)
 {
 	char path[PATH_MAX], stale_path[PATH_MAX];
 
@@ -373,9 +374,9 @@ static bool oid_stale(uint64_t oid)
 {
 	int i, nr_copies;
 	struct vnode_info *vinfo;
-	struct sd_vnode *v;
+	const struct sd_vnode *v;
 	bool ret = true;
-	struct sd_vnode *obj_vnodes[SD_MAX_COPIES];
+	const struct sd_vnode *obj_vnodes[SD_MAX_COPIES];
 
 	vinfo = get_vnode_info();
 	nr_copies = get_obj_copy_number(oid, vinfo->nr_zones);
@@ -424,7 +425,8 @@ static int check_stale_objects(uint64_t oid, void *arg)
 	return SD_RES_SUCCESS;
 }
 
-int default_end_recover(uint32_t old_epoch, struct vnode_info *old_vnode_info)
+int default_end_recover(uint32_t old_epoch,
+			const struct vnode_info *old_vnode_info)
 {
 	if (old_epoch == 0)
 		return SD_RES_SUCCESS;

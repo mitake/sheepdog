@@ -55,7 +55,7 @@ static size_t get_join_message_size(struct join_message *jm)
 	return sizeof(*jm) + jm->nr_nodes * sizeof(jm->nodes[0]);
 }
 
-static int get_zones_nr_from(struct sd_node *nodes, int nr_nodes)
+static int get_zones_nr_from(const struct sd_node *nodes, int nr_nodes)
 {
 	int nr_zones = 0, i, j;
 	uint32_t zones[SD_MAX_COPIES];
@@ -162,7 +162,7 @@ void put_vnode_info(struct vnode_info *vnode_info)
 	}
 }
 
-static struct vnode_info *alloc_vnode_info(struct sd_node *nodes,
+static struct vnode_info *alloc_vnode_info(const struct sd_node *nodes,
 					   size_t nr_nodes)
 {
 	struct vnode_info *vnode_info;
@@ -223,7 +223,7 @@ int local_get_node_list(const struct sd_req *req, struct sd_rsp *rsp,
 /*
  * Indicator if a cluster operation is currently running.
  */
-static bool cluster_op_running = false;
+static bool cluster_op_running;
 
 static struct vdi_op_message *prepare_cluster_msg(struct request *req,
 		size_t *sizep)
@@ -283,7 +283,7 @@ static void cluster_op_done(struct work *work)
  * Must run in the main thread as it accesses unlocked state like
  * sys->pending_list.
  */
-bool sd_block_handler(struct sd_node *sender)
+bool sd_block_handler(const struct sd_node *sender)
 {
 	struct request *req;
 
@@ -351,8 +351,8 @@ static int get_nodes_nr_epoch(uint32_t epoch)
 	return epoch_log_read(epoch, nodes, sizeof(nodes));
 }
 
-static struct sd_node *find_entry_list(struct sd_node *entry,
-					struct list_head *head)
+static const struct sd_node *find_entry_list(const struct sd_node *entry,
+					     struct list_head *head)
 {
 	struct node *n;
 	list_for_each_entry(n, head, list)
@@ -363,8 +363,8 @@ static struct sd_node *find_entry_list(struct sd_node *entry,
 
 }
 
-static struct sd_node *find_entry_epoch(struct sd_node *entry,
-					uint32_t epoch)
+static const struct sd_node *find_entry_epoch(const struct sd_node *entry,
+					      uint32_t epoch)
 {
 	struct sd_node nodes[SD_MAX_NODES];
 	int nr, i;
@@ -387,7 +387,7 @@ static struct sd_node *find_entry_epoch(struct sd_node *entry,
  * an automated restart.  These nodes will become part of the cluster by
  * the time it does get restarted.
  */
-static bool add_delayed_node(uint32_t epoch, struct sd_node *node)
+static bool add_delayed_node(uint32_t epoch, const struct sd_node *node)
 {
 	struct node *n;
 
@@ -406,7 +406,7 @@ static bool add_delayed_node(uint32_t epoch, struct sd_node *node)
  * epoch, and if so add it to the list of node expected to be present
  * but failing to join.
  */
-static bool add_failed_node(uint32_t epoch, struct sd_node *node)
+static bool add_failed_node(uint32_t epoch, const struct sd_node *node)
 {
 	struct node *n;
 
@@ -425,7 +425,8 @@ static bool add_failed_node(uint32_t epoch, struct sd_node *node)
  * Add the failed and delayed nodes in a join message to the local
  * lists of such nodes.
  */
-static void update_exceptional_node_list(uint32_t epoch, struct join_message *jm)
+static void update_exceptional_node_list(uint32_t epoch,
+					 const struct join_message *jm)
 {
 	int i;
 
@@ -498,8 +499,8 @@ static int cluster_sanity_check(struct join_message *jm)
 	return CJ_RES_SUCCESS;
 }
 
-static int cluster_wait_for_join_check(struct sd_node *joined,
-		struct join_message *jm)
+static int cluster_wait_for_join_check(const struct sd_node *joined,
+				       struct join_message *jm)
 {
 	struct sd_node local_entries[SD_MAX_NODES];
 	int nr, nr_local_entries, nr_failed_entries, nr_delayed_nodes;
@@ -607,7 +608,7 @@ static int get_vdis_from(struct sd_node *node)
 	struct sd_rsp *rsp = (struct sd_rsp *)&hdr;
 	struct vdi_copy *vc = NULL;
 	int i, ret = SD_RES_SUCCESS;
-	unsigned int rlen, wlen;
+	unsigned int rlen;
 	int count;
 
 	if (node_is_local(node))
@@ -622,10 +623,8 @@ static int get_vdis_from(struct sd_node *node)
 	}
 
 	sd_init_req(&hdr, SD_OP_GET_VDI_COPIES);
-	hdr.epoch = sys->epoch;
 	hdr.data_length = rlen;
-	wlen = 0;
-	ret = sheep_exec_req(&node->nid, &hdr, (char *)vc, &wlen, &rlen);
+	ret = sheep_exec_req(&node->nid, &hdr, (char *)vc);
 	if (ret != SD_RES_SUCCESS)
 		goto out;
 
@@ -685,8 +684,9 @@ int log_current_epoch(void)
 				current_vnode_info->nr_nodes);
 }
 
-static struct vnode_info *alloc_old_vnode_info(struct sd_node *joined,
-		struct sd_node *nodes, size_t nr_nodes)
+static struct vnode_info *alloc_old_vnode_info(const struct sd_node *joined,
+					       const struct sd_node *nodes,
+					       size_t nr_nodes)
 {
 	struct sd_node old_nodes[SD_MAX_NODES];
 	size_t count = 0, i;
@@ -699,8 +699,9 @@ static struct vnode_info *alloc_old_vnode_info(struct sd_node *joined,
 	return alloc_vnode_info(old_nodes, count);
 }
 
-static void finish_join(struct join_message *msg, struct sd_node *joined,
-		struct sd_node *nodes, size_t nr_nodes)
+static void finish_join(const struct join_message *msg,
+			const struct sd_node *joined,
+			const struct sd_node *nodes, size_t nr_nodes)
 {
 	sys->join_finished = true;
 	sys->epoch = msg->epoch;
@@ -733,7 +734,7 @@ static void finish_join(struct join_message *msg, struct sd_node *joined,
 	sockfd_cache_add_group(nodes, nr_nodes);
 }
 
-static void get_vdis(struct sd_node *nodes, size_t nr_nodes)
+static void get_vdis(const struct sd_node *nodes, size_t nr_nodes)
 {
 	int array_len = nr_nodes * sizeof(struct sd_node);
 	struct get_vdis_work *w;
@@ -787,8 +788,9 @@ void recalculate_vnodes(struct sd_node *nodes, int nr_nodes)
 	}
 }
 
-static void update_cluster_info(struct join_message *msg,
-				struct sd_node *joined, struct sd_node *nodes,
+static void update_cluster_info(const struct join_message *msg,
+				const struct sd_node *joined,
+				const struct sd_node *nodes,
 				size_t nr_nodes)
 {
 	struct vnode_info *old_vnode_info;
@@ -856,10 +858,11 @@ static void update_cluster_info(struct join_message *msg,
  * Must run in the main thread as it accesses unlocked state like
  * sys->pending_list.
  */
-void sd_notify_handler(struct sd_node *sender, void *data, size_t data_len)
+void sd_notify_handler(const struct sd_node *sender, void *data,
+		       size_t data_len)
 {
 	struct vdi_op_message *msg = data;
-	struct sd_op_template *op = get_sd_op(msg->req.opcode);
+	const struct sd_op_template *op = get_sd_op(msg->req.opcode);
 	int ret = msg->rsp.result;
 	struct request *req = NULL;
 
@@ -890,7 +893,8 @@ void sd_notify_handler(struct sd_node *sender, void *data, size_t data_len)
 	}
 }
 
-enum cluster_join_result sd_check_join_cb(struct sd_node *joining, void *opaque)
+enum cluster_join_result sd_check_join_cb(const struct sd_node *joining,
+					  void *opaque)
 {
 	struct join_message *jm = opaque;
 	char str[256];
@@ -977,7 +981,7 @@ enum cluster_join_result sd_check_join_cb(struct sd_node *joining, void *opaque)
 	jm->disable_recovery = sys->disable_recovery;
 
 	if (sd_store)
-		strcpy((char *)jm->store, sd_store->name);
+		pstrcpy((char *)jm->store, sizeof(jm->store), sd_store->name);
 
 	if (jm->cluster_status != SD_STATUS_OK &&
 	    (ret == CJ_RES_SUCCESS || ret == CJ_RES_JOIN_LATER))
@@ -1014,13 +1018,14 @@ static int send_join_request(struct sd_node *ent)
 	return ret;
 }
 
-void sd_join_handler(struct sd_node *joined, struct sd_node *members,
-		size_t nr_members, enum cluster_join_result result,
-		void *opaque)
+void sd_join_handler(const struct sd_node *joined,
+		     const struct sd_node *members,
+		     size_t nr_members, enum cluster_join_result result,
+		     const void *opaque)
 {
 	int i;
 	int nr, nr_local, nr_failed, nr_delayed_nodes;
-	struct join_message *jm = opaque;
+	const struct join_message *jm = opaque;
 	uint32_t le = get_latest_epoch();
 
 	if (node_eq(joined, &sys->this_node)) {
@@ -1099,8 +1104,8 @@ void sd_join_handler(struct sd_node *joined, struct sd_node *members,
 	}
 }
 
-void sd_leave_handler(struct sd_node *left, struct sd_node *members,
-		size_t nr_members)
+void sd_leave_handler(const struct sd_node *left, const struct sd_node *members,
+		      size_t nr_members)
 {
 	struct vnode_info *old_vnode_info;
 	int i;

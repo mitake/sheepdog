@@ -35,16 +35,9 @@
 #include "logger.h"
 #include "util.h"
 
-#define LOGDBG 0
-
-#if LOGDBG
-#define logdbg(file, fmt, args...) fprintf(file, fmt, ##args)
-#else
-#define logdbg(file, fmt, args...) do {} while (0)
-#endif
-
-static int log_enqueue(int prio, const char *func, int line, const char *fmt,
-		       va_list ap) __attribute__ ((format (printf, 4, 0)));
+static int log_vsnprintf(char *buff, size_t size, int prio,
+			 const char *func, int line, const char *fmt,
+			 va_list ap) __attribute__ ((format (printf, 6, 0)));
 static void dolog(int prio, const char *func, int line, const char *fmt,
 		  va_list ap) __attribute__ ((format (printf, 4, 0)));
 
@@ -56,34 +49,32 @@ union semun {
 };
 
 struct logarea {
-	bool empty;
 	bool active;
-	void *head;
-	void *tail;
-	void *start;
-	void *end;
-	char *buff;
+	char *tail;
+	char *start;
+	char *end;
 	int semid;
 	union semun semarg;
 	int fd;
 };
 
 struct logmsg {
-	short int prio;
-	void *next;
-	char *str;
+	time_t t;
+	int prio;
+	char str[0];
 };
 
 static int log_fd = -1;
 static __thread const char *worker_name;
 static __thread int worker_idx;
 static struct logarea *la;
-static char *log_name;
+static const char *log_name;
 static char *log_nowname;
 static int log_level = SDOG_INFO;
 static pid_t sheep_pid;
 static pid_t logger_pid;
 static key_t semkey;
+static char *log_buff;
 
 static int64_t max_logsize = 500 * 1024 * 1024;  /*500MB*/
 
@@ -93,10 +84,9 @@ static notrace int logarea_init(int size)
 {
 	int shmid;
 
-	logdbg(stderr, "entering logarea_init\n");
-
-	if ((shmid = shmget(IPC_PRIVATE, sizeof(struct logarea),
-			    0644 | IPC_CREAT | IPC_EXCL)) == -1) {
+	shmid = shmget(IPC_PRIVATE, sizeof(struct logarea),
+		       0644 | IPC_CREAT | IPC_EXCL);
+	if (shmid == -1) {
 		syslog(LOG_ERR, "shmget logarea failed: %m");
 		return 1;
 	}
@@ -112,8 +102,8 @@ static notrace int logarea_init(int size)
 	if (size < MAX_MSG_SIZE)
 		size = LOG_SPACE_SIZE;
 
-	if ((shmid = shmget(IPC_PRIVATE, size,
-			    0644 | IPC_CREAT | IPC_EXCL)) == -1) {
+	shmid = shmget(IPC_PRIVATE, size, 0644 | IPC_CREAT | IPC_EXCL);
+	if (shmid == -1) {
 		syslog(LOG_ERR, "shmget msg failed: %m");
 		shmdt(la);
 		return 1;
@@ -129,40 +119,20 @@ static notrace int logarea_init(int size)
 
 	shmctl(shmid, IPC_RMID, NULL);
 
-	la->empty = true;
-	la->end = (char *)la->start + size;
-	la->head = la->start;
+	la->end = la->start + size;
 	la->tail = la->start;
 
-	if ((shmid = shmget(IPC_PRIVATE, MAX_MSG_SIZE + sizeof(struct logmsg),
-			    0644 | IPC_CREAT | IPC_EXCL)) == -1) {
-		syslog(LOG_ERR, "shmget logmsg failed: %m");
-		shmdt(la->start);
-		shmdt(la);
-		return 1;
-	}
-	la->buff = shmat(shmid, NULL, 0);
-	if (!la->buff) {
-		syslog(LOG_ERR, "shmat logmsg failed: %m");
-		shmdt(la->start);
-		shmdt(la);
-		return 1;
-	}
-
-	shmctl(shmid, IPC_RMID, NULL);
-
-	if ((la->semid = semget(semkey, 1, 0666 | IPC_CREAT)) < 0) {
+	la->semid = semget(semkey, 1, 0666 | IPC_CREAT);
+	if (la->semid < 0) {
 		syslog(LOG_ERR, "semget failed: %m");
-		shmdt(la->buff);
 		shmdt(la->start);
 		shmdt(la);
 		return 1;
 	}
 
-	la->semarg.val=1;
+	la->semarg.val = 1;
 	if (semctl(la->semid, 0, SETVAL, la->semarg) < 0) {
 		syslog(LOG_ERR, "semctl failed: %m");
-		shmdt(la->buff);
 		shmdt(la->start);
 		shmdt(la);
 		return 1;
@@ -176,161 +146,66 @@ static void notrace free_logarea(void)
 	if (log_fd >= 0)
 		close(log_fd);
 	semctl(la->semid, 0, IPC_RMID, la->semarg);
-	shmdt(la->buff);
 	shmdt(la->start);
 	shmdt(la);
 }
 
-#if LOGDBG
-static void dump_logarea(void)
+static notrace int log_vsnprintf(char *buff, size_t size, int prio,
+				 const char *func, int line, const char *fmt,
+				 va_list ap)
 {
-	struct logmsg * msg;
-
-	logdbg(stderr, "\n==== area: start addr = %p, end addr = %p ====\n",
-		la->start, la->end);
-	logdbg(stderr, "|addr     |next     |prio|msg\n");
-
-	for (msg = (struct logmsg *)la->head; (void *)msg != la->tail;
-	     msg = msg->next)
-		logdbg(stderr, "|%p |%p |%i   |%s\n", (void *)msg, msg->next,
-				msg->prio, (char *)&msg->str);
-
-	logdbg(stderr, "|%p |%p |%i   |%s\n", (void *)msg, msg->next,
-			msg->prio, (char *)&msg->str);
-
-	logdbg(stderr, "\n\n");
-}
-#endif
-
-static notrace int log_enqueue(int prio, const char *func, int line, const char *fmt,
-		       va_list ap)
-{
-	int len, fwd;
-	char *p, buff[MAX_MSG_SIZE];
-	struct logmsg *msg;
-	struct logmsg *lastmsg;
-	time_t t;
-	struct tm *tmp;
-
-	lastmsg = (struct logmsg *)la->tail;
-
-	if (!la->empty) {
-		fwd = sizeof(struct logmsg) +
-		      strlen((char *)&lastmsg->str) * sizeof(char) + 1;
-		la->tail = (char *)la->tail + fwd;
-	}
-
-	p = buff;
-
-
-	t = time(NULL);
-	tmp = localtime(&t);
-
-	strftime(p, MAX_MSG_SIZE, "%b %2d %H:%M:%S", tmp);
-	p += strlen(p);
+	char *p = buff;
 
 	if (worker_name && worker_idx)
-		snprintf(p, MAX_MSG_SIZE - strlen(buff), " [%s %d] ",
-			 worker_name, worker_idx);
+		snprintf(p, size, "[%s %d] ", worker_name, worker_idx);
 	else if (worker_name)
-		snprintf(p, MAX_MSG_SIZE - strlen(buff), " [%s] ",
-			 worker_name);
+		snprintf(p, size, "[%s] ", worker_name);
 	else
-		strncpy(p, " [main] ", MAX_MSG_SIZE - strlen(buff));
+		pstrcpy(p, size, "[main] ");
 
 	p += strlen(p);
-	snprintf(p, MAX_MSG_SIZE - strlen(buff), "%s(%d) ", func, line);
+	snprintf(p, size - strlen(buff), "%s(%d) ", func, line);
 
 	p += strlen(p);
 
-	vsnprintf(p, MAX_MSG_SIZE - strlen(buff), fmt, ap);
+	vsnprintf(p, size - strlen(buff), fmt, ap);
 
-	len = strlen(buff) * sizeof(char) + 1;
+	p += strlen(p);
 
-	/* not enough space on tail : rewind */
-	if (la->head <= la->tail &&
-	    (len + sizeof(struct logmsg)) > ((char *)la->end - (char *)la->tail)) {
-		logdbg(stderr, "enqueue: rewind tail to %p\n", la->tail);
-			la->tail = la->start;
-	}
-
-	/* not enough space on head : drop msg */
-	if (la->head > la->tail &&
-	    (len + sizeof(struct logmsg)) > ((char *)la->head - (char *)la->tail)) {
-		logdbg(stderr, "enqueue: log area overrun, dropping message\n");
-		syslog(LOG_ERR, "enqueue: log area overrun, dropping message\n");
-
-		if (!la->empty)
-			la->tail = lastmsg;
-
-		return 1;
-	}
-
-	/* ok, we can stage the msg in the area */
-	la->empty = false;
-	msg = (struct logmsg *)la->tail;
-	msg->prio = prio;
-	memcpy((void *)&msg->str, buff, len);
-	lastmsg->next = la->tail;
-	msg->next = la->head;
-
-	logdbg(stderr, "enqueue: %p, %p, %i, %s\n", (void *)msg, msg->next,
-		msg->prio, (char *)&msg->str);
-
-#if LOGDBG
-	dump_logarea();
-#endif
-	return 0;
-}
-
-static notrace int log_dequeue(void *buff)
-{
-	struct logmsg * src = (struct logmsg *)la->head;
-	struct logmsg * dst = (struct logmsg *)buff;
-	struct logmsg * lst = (struct logmsg *)la->tail;
-	int len;
-
-	if (la->empty)
-		return 1;
-
-	len = strlen((char *)&src->str) * sizeof(char) +
-		sizeof(struct logmsg) + 1;
-
-	dst->prio = src->prio;
-	memcpy(dst, src,  len);
-
-	if (la->tail == la->head)
-		la->empty = true; /* we purge the last logmsg */
-	else {
-		la->head = src->next;
-		lst->next = la->head;
-	}
-	logdbg(stderr, "dequeue: %p, %p, %i, %s\n",
-		(void *)src, src->next, src->prio, (char *)&src->str);
-
-	memset((void *)src, 0,  len);
-
-	return la->empty;
+	return p - buff;
 }
 
 /*
  * this one can block under memory pressure
  */
-static notrace void log_syslog(void *buff)
+static notrace void log_syslog(const struct logmsg *msg)
 {
-	struct logmsg * msg = (struct logmsg *)buff;
+	char str[MAX_MSG_SIZE];
+	struct tm tm;
+	size_t len;
+
+	localtime_r(&msg->t, &tm);
+	len = strftime(str, sizeof(str), "%b %2d %H:%M:%S ", &tm);
+	pstrcpy(str + len, sizeof(str) - len, msg->str);
 
 	if (log_fd >= 0)
-		xwrite(log_fd, (char *)&msg->str, strlen((char *)&msg->str));
+		xwrite(log_fd, str, strlen(str));
 	else
-		syslog(msg->prio, "%s", (char *)&msg->str);
+		syslog(msg->prio, "%s", str);
 }
 
 static notrace void dolog(int prio, const char *func, int line,
 		const char *fmt, va_list ap)
 {
+	char str[MAX_MSG_SIZE];
+	int len;
+
+	len = log_vsnprintf(str, sizeof(str), prio, func, line, fmt, ap);
+
 	if (la) {
 		struct sembuf ops;
+		struct logmsg *msg;
+		time_t t = time(NULL);
 
 		ops.sem_num = 0;
 		ops.sem_flg = SEM_UNDO;
@@ -340,7 +215,18 @@ static notrace void dolog(int prio, const char *func, int line,
 			return;
 		}
 
-		log_enqueue(prio, func, line, fmt, ap);
+		/* not enough space: drop msg */
+		if (len + sizeof(struct logmsg) + 1 > la->end - la->tail)
+			syslog(LOG_ERR, "enqueue: log area overrun, "
+			       "dropping message\n");
+		else {
+			/* ok, we can stage the msg in the area */
+			msg = (struct logmsg *)la->tail;
+			msg->t = t;
+			msg->prio = prio;
+			memcpy(msg->str, str, len + 1);
+			la->tail += sizeof(struct logmsg) + len + 1;
+		}
 
 		ops.sem_op = 1;
 		if (semop(la->semid, &ops, 1) < 0) {
@@ -348,19 +234,7 @@ static notrace void dolog(int prio, const char *func, int line,
 			return;
 		}
 	} else {
-		char p[MAX_MSG_SIZE];
-
-		vsnprintf(p, MAX_MSG_SIZE, fmt, ap);
-
-		if (worker_name && worker_idx)
-			fprintf(stderr, "[%s %d] %s(%d) %s", worker_name,
-				worker_idx, func, line, p);
-		else if (worker_name)
-			fprintf(stderr, "[%s] %s(%d) %s", worker_name, func,
-				line, p);
-		else
-			fprintf(stderr, "[main] %s(%d) %s", func, line, p);
-
+		xwrite(fileno(stderr), str, len);
 		fflush(stderr);
 	}
 }
@@ -408,24 +282,35 @@ notrace void log_write(int prio, const char *func, int line, const char *fmt, ..
 static notrace void log_flush(void)
 {
 	struct sembuf ops;
+	size_t size, done = 0;
+	const struct logmsg *msg;
 
-	while (!la->empty) {
-		ops.sem_num = 0;
-		ops.sem_flg = SEM_UNDO;
-		ops.sem_op = -1;
-		if (semop(la->semid, &ops, 1) < 0) {
-			syslog(LOG_ERR, "semop up failed: %m");
-			exit(1);
-		}
+	if (la->tail == la->start)
+		return;
 
-		log_dequeue(la->buff);
+	ops.sem_num = 0;
+	ops.sem_flg = SEM_UNDO;
+	ops.sem_op = -1;
+	if (semop(la->semid, &ops, 1) < 0) {
+		syslog(LOG_ERR, "semop up failed: %m");
+		exit(1);
+	}
 
-		ops.sem_op = 1;
-		if (semop(la->semid, &ops, 1) < 0) {
-			syslog(LOG_ERR, "semop down failed: %m");
-			exit(1);
-		}
-		log_syslog(la->buff);
+	size = la->tail - la->start;
+	memcpy(log_buff, la->start, size);
+	memset(la->start, 0, size);
+	la->tail = la->start;
+
+	ops.sem_op = 1;
+	if (semop(la->semid, &ops, 1) < 0) {
+		syslog(LOG_ERR, "semop down failed: %m");
+		exit(1);
+	}
+
+	while (done < size) {
+		msg = (const struct logmsg *)(log_buff + done);
+		log_syslog(msg);
+		done += sizeof(*msg) + strlen(msg->str) + 1;
 	}
 }
 
@@ -453,6 +338,8 @@ static notrace void logger(char *log_dir, char *outfile)
 	struct sigaction sa_old;
 	struct sigaction sa_new;
 	int fd;
+
+	log_buff = xzalloc(la->end - la->start);
 
 	log_fd = open(outfile, O_CREAT | O_RDWR | O_APPEND, 0644);
 	if (log_fd < 0) {
@@ -486,6 +373,11 @@ static notrace void logger(char *log_dir, char *outfile)
 
 	prctl(PR_SET_PDEATHSIG, SIGHUP);
 
+	/* we need to check the aliveness of the sheep process since
+	 * it could die before the logger call prctl. */
+	if (kill(sheep_pid, 0) < 0)
+		kill(logger_pid, SIGHUP);
+
 	while (la->active) {
 		log_flush();
 
@@ -507,21 +399,21 @@ static notrace void logger(char *log_dir, char *outfile)
 		sleep(1);
 	}
 
+	free(log_buff);
 	exit(0);
 }
 
-notrace int log_init(char *program_name, int size, bool to_stdout, int level,
-		char *outfile)
+notrace int log_init(const char *program_name, int size, bool to_stdout,
+		     int level, char *outfile)
 {
 	char log_dir[PATH_MAX], tmp[PATH_MAX];
 
 	log_level = level;
 
-	logdbg(stderr, "entering log_init\n");
 	log_name = program_name;
 	log_nowname = outfile;
-	strcpy(tmp, outfile);
-	strcpy(log_dir, dirname(tmp));
+	pstrcpy(tmp, sizeof(tmp), outfile);
+	pstrcpy(log_dir, sizeof(log_dir), dirname(tmp));
 
 	semkey = random();
 

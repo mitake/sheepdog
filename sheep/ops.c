@@ -116,7 +116,7 @@ static int cluster_new_vdi(struct request *req)
 	iocb.data_len = hdr->data_length;
 	iocb.size = hdr->vdi.vdi_size;
 	iocb.base_vid = hdr->vdi.base_vdi_id;
-	iocb.snapid = hdr->vdi.snapid;
+	iocb.create_snapshot = !!hdr->vdi.snapid;
 	iocb.nr_copies = hdr->vdi.copies;
 
 	if (!iocb.nr_copies)
@@ -369,7 +369,7 @@ static int local_get_store_list(struct request *req)
 	list_for_each_entry(driver, &store_drivers, list) {
 		strbuf_addf(&buf, "%s ", driver->name);
 	}
-	strbuf_copyout(&buf, req->data, req->data_length);
+	req->rp.data_length = strbuf_copyout(&buf, req->data, req->data_length);
 
 	strbuf_release(&buf);
 	return SD_RES_SUCCESS;
@@ -577,19 +577,23 @@ static int cluster_recovery_completion(const struct sd_req *req,
 	static int latest_epoch;
 	struct vnode_info *vnode_info;
 	int i;
+	uint32_t epoch = req->obj.tgt_epoch;
 
 	node = (struct sd_node *)data;
 
-	if (latest_epoch < req->epoch) {
-		dprintf("new epoch %d\n", req->epoch);
-		latest_epoch = req->epoch;
+	if (latest_epoch > epoch)
+		return SD_RES_SUCCESS;
+
+	if (latest_epoch < epoch) {
+		dprintf("new epoch %d\n", epoch);
+		latest_epoch = epoch;
 		nr_recovereds = 0;
 	}
 
 	recovereds[nr_recovereds++] = *(struct sd_node *)node;
 	qsort(recovereds, nr_recovereds, sizeof(*recovereds), node_id_cmp);
 
-	dprintf("%s is recovered at epoch %d\n", node_to_str(node), req->epoch);
+	dprintf("%s is recovered at epoch %d\n", node_to_str(node), epoch);
 	for (i = 0; i < nr_recovereds; i++)
 		dprintf("[%x] %s\n", i, node_to_str(recovereds + i));
 
@@ -601,7 +605,7 @@ static int cluster_recovery_completion(const struct sd_req *req,
 	if (vnode_info->nr_nodes == nr_recovereds &&
 	    memcmp(vnode_info->nodes, recovereds,
 		   sizeof(*recovereds) * nr_recovereds) == 0) {
-		dprintf("all nodes are recovered at epoch %d\n", req->epoch);
+		dprintf("all nodes are recovered at epoch %d\n", epoch);
 		if (sd_store->cleanup)
 			sd_store->cleanup();
 	}
@@ -1172,7 +1176,7 @@ static struct sd_op_template sd_ops[] = {
 	},
 };
 
-struct sd_op_template *get_sd_op(uint8_t opcode)
+const struct sd_op_template *get_sd_op(uint8_t opcode)
 {
 	if (sd_ops[opcode].type == 0)
 		return NULL;
@@ -1180,42 +1184,42 @@ struct sd_op_template *get_sd_op(uint8_t opcode)
 	return sd_ops + opcode;
 }
 
-const char *op_name(struct sd_op_template *op)
+const char *op_name(const struct sd_op_template *op)
 {
 	return op->name;
 }
 
-bool is_cluster_op(struct sd_op_template *op)
+bool is_cluster_op(const struct sd_op_template *op)
 {
 	return op->type == SD_OP_TYPE_CLUSTER;
 }
 
-bool is_local_op(struct sd_op_template *op)
+bool is_local_op(const struct sd_op_template *op)
 {
 	return op->type == SD_OP_TYPE_LOCAL;
 }
 
-bool is_peer_op(struct sd_op_template *op)
+bool is_peer_op(const struct sd_op_template *op)
 {
 	return op->type == SD_OP_TYPE_PEER;
 }
 
-bool is_gateway_op(struct sd_op_template *op)
+bool is_gateway_op(const struct sd_op_template *op)
 {
 	return op->type == SD_OP_TYPE_GATEWAY;
 }
 
-bool is_force_op(struct sd_op_template *op)
+bool is_force_op(const struct sd_op_template *op)
 {
 	return !!op->force;
 }
 
-bool has_process_work(struct sd_op_template *op)
+bool has_process_work(const struct sd_op_template *op)
 {
 	return !!op->process_work;
 }
 
-bool has_process_main(struct sd_op_template *op)
+bool has_process_main(const struct sd_op_template *op)
 {
 	return !!op->process_main;
 }
@@ -1239,13 +1243,13 @@ void do_process_work(struct work *work)
 	req->rp.result = ret;
 }
 
-int do_process_main(struct sd_op_template *op, const struct sd_req *req,
+int do_process_main(const struct sd_op_template *op, const struct sd_req *req,
 		    struct sd_rsp *rsp, void *data)
 {
 	return op->process_main(req, rsp, data);
 }
 
-int sheep_do_op_work(struct sd_op_template *op, struct request *req)
+int sheep_do_op_work(const struct sd_op_template *op, struct request *req)
 {
 	return op->process_work(req);
 }

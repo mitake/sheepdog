@@ -8,6 +8,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <urcu/uatomic.h>
 
 #include "bitops.h"
 #include "list.h"
@@ -38,11 +39,11 @@
 
 #define notrace __attribute__((no_instrument_function))
 
-#define uninitialized_var(x) x = x
+#define uninitialized_var(x) (x = x)
 
 static inline int before(uint32_t seq1, uint32_t seq2)
 {
-        return (int32_t)(seq1 - seq2) < 0;
+	return (int32_t)(seq1 - seq2) < 0;
 }
 
 static inline int after(uint32_t seq1, uint32_t seq2)
@@ -50,13 +51,13 @@ static inline int after(uint32_t seq1, uint32_t seq2)
 	return (int32_t)(seq2 - seq1) < 0;
 }
 
-#define min(x,y) ({ \
+#define min(x, y) ({ \
 	typeof(x) _x = (x);	\
 	typeof(y) _y = (y);	\
 	(void) (&_x == &_y);		\
 	_x < _y ? _x : _y; })
 
-#define max(x,y) ({ \
+#define max(x, y) ({ \
 	typeof(x) _x = (x);	\
 	typeof(y) _y = (y);	\
 	(void) (&_x == &_y);		\
@@ -78,10 +79,11 @@ extern ssize_t xread(int fd, void *buf, size_t len);
 extern ssize_t xwrite(int fd, const void *buf, size_t len);
 extern ssize_t xpread(int fd, void *buf, size_t count, off_t offset);
 extern ssize_t xpwrite(int fd, const void *buf, size_t count, off_t offset);
+extern void pstrcpy(char *buf, int buf_size, const char *str);
 extern int rmdir_r(char *dir_path);
 
 void trim_zero_sectors(void *buf, uint64_t *offset, uint32_t *len);
-void set_trimmed_sectors(void *buf, uint64_t offset,uint32_t len,
+void set_trimmed_sectors(void *buf, uint64_t offset, uint32_t len,
 			 uint32_t requested_len);
 
 #ifdef assert
@@ -101,5 +103,27 @@ void set_trimmed_sectors(void *buf, uint64_t offset,uint32_t len,
 #define assert(expr) ((void)0)
 
 #endif	/* NDEBUG */
+
+/* urcu helpers */
+
+/* Boolean data type which can be accessed by multiple threads */
+typedef unsigned long uatomic_bool;
+
+static inline bool uatomic_is_true(uatomic_bool *val)
+{
+	return uatomic_read(val) == 1;
+}
+
+/* success if the old value is false */
+static inline bool uatomic_set_true(uatomic_bool *val)
+{
+	return uatomic_cmpxchg(val, 0, 1) == 0;
+}
+
+static inline void uatomic_set_false(uatomic_bool *val)
+{
+	assert(uatomic_is_true(val));
+	uatomic_set(val, 0);
+}
 
 #endif

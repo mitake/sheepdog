@@ -11,7 +11,6 @@
 
 #include "../include/config.h"
 
-#include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -31,6 +30,7 @@
 #include "sheep_priv.h"
 #include "trace/trace.h"
 #include "util.h"
+#include "option.h"
 
 #define EPOLL_SIZE 4096
 #define DEFAULT_OBJECT_DIR "/tmp"
@@ -39,71 +39,61 @@
 LIST_HEAD(cluster_drivers);
 static const char program_name[] = "sheep";
 
-static struct option const long_options[] = {
-	{"bindaddr", required_argument, NULL, 'b'},
-	{"cluster", required_argument, NULL, 'c'},
-	{"debug", no_argument, NULL, 'd'},
-	{"foreground", no_argument, NULL, 'f'},
-	{"gateway", no_argument, NULL, 'g'},
-	{"help", no_argument, NULL, 'h'},
-	{"journal", no_argument, NULL, 'j'},
-	{"loglevel", required_argument, NULL, 'l'},
-	{"myaddr", required_argument, NULL, 'y'},
-	{"stdout", no_argument, NULL, 'o'},
-	{"port", required_argument, NULL, 'p'},
-	{"disk-space", required_argument, NULL, 's'},
-	{"upgrade", no_argument, NULL, 'u'},
-	{"zone", required_argument, NULL, 'z'},
-	{"pidfile", required_argument, NULL, 'P'},
-	{"write-cache", required_argument, NULL, 'w'},
-	{NULL, 0, NULL, 0},
+static struct sd_option sheep_options[] = {
+	{'b', "bindaddr", true, "specify IP address of interface to listen on"},
+	{'c', "cluster", true, "specify the cluster driver"},
+	{'d', "debug", false, "include debug messages in the log"},
+	{'D', "directio", false, "use direct IO for backend store"},
+	{'f', "foreground", false, "make the program run in the foreground"},
+	{'g', "gateway", false, "make the progam run as a gateway mode"},
+	{'h', "help", false, "display this help and exit"},
+	{'j', "journal", true, "use jouranl file to log all the write operations"},
+	{'l', "loglevel", true, "specify the level of logging detail"},
+	{'o', "stdout", false, "log to stdout instead of shared logger"},
+	{'p', "port", true, "specify the TCP port on which to listen"},
+	{'P', "pidfile", true, "create a pid file"},
+	{'s', "disk-space", true, "specify the free disk space in megabytes"},
+	{'u', "upgrade", false, "upgrade to the latest data layout"},
+	{'v', "version", false, "show the version"},
+	{'w', "write-cache", true, "specify the cache type"},
+	{'y', "myaddr", true, "specify the address advertised to other sheep"},
+	{'z', "zone", true, "specify the zone id"},
+	{ 0, NULL, false, NULL },
 };
-
-static const char *short_options = "b:c:dDfghjl:op:P:s:uw:y:z:";
 
 static void usage(int status)
 {
 	if (status)
 		fprintf(stderr, "Try `%s --help' for more information.\n",
 			program_name);
-	else
-		printf("\
-Sheepdog daemon (version %s)\n\
-Usage: %s [OPTION]... [PATH]\n\
-Options:\n\
-  -b, --bindaddr          specify IP address of interface to listen on\n\
-  -c, --cluster           specify the cluster driver\n\
-  -d, --debug             include debug messages in the log\n\
-  -f, --foreground        make the program run in the foreground\n\
-  -g, --gateway           make the progam run as a gateway mode\n\
-  -h, --help              display this help and exit\n\
-  -j, --journal           use jouranl to update vdi objects\n\
-  -l, --loglevel          specify the level of logging detail\n\
-  -o, --stdout            log to stdout instead of shared logger\n\
-  -p, --port              specify the TCP port on which to listen\n\
-  -P, --pidfile           create a pid file\n\
-  -s, --disk-space        specify the free disk space in megabytes\n\
-  -u, --upgrade           upgrade to the latest data layout\n\
-  -y, --myaddr            specify the address advertised to other sheep\n\
-  -z, --zone              specify the zone id\n\
-  -w, --write-cache       specify the cache type\n\
-", PACKAGE_VERSION, program_name);
+	else {
+		struct sd_option *opt;
+
+		printf("Sheepdog daemon (version %s)\n"
+		       "Usage: %s [OPTION]... [PATH]\n"
+		       "Options:\n", PACKAGE_VERSION, program_name);
+
+		sd_for_each_option(opt, sheep_options) {
+			printf("  -%c, --%-18s%s\n", opt->ch, opt->name,
+			       opt->desc);
+		}
+	}
+
 	exit(status);
 }
 
 static void sdlog_help(void)
 {
-	printf("\
-Available log levels:\n\
-  #    Level           Description\n\
-  0    SDOG_EMERG      system has failed and is unusable\n\
-  1    SDOG_ALERT      action must be taken immediately\n\
-  2    SDOG_CRIT       critical conditions\n\
-  3    SDOG_ERR        error conditions\n\
-  4    SDOG_WARNING    warning conditions\n\
-  5    SDOG_NOTICE     normal but significant conditions\n\
-  6    SDOG_INFO       informational notices\n\
-  7    SDOG_DEBUG      debugging messages\n");
+	printf("Available log levels:\n"
+	       "  #    Level           Description\n"
+	       "  0    SDOG_EMERG      system has failed and is unusable\n"
+	       "  1    SDOG_ALERT      action must be taken immediately\n"
+	       "  2    SDOG_CRIT       critical conditions\n"
+	       "  3    SDOG_ERR        error conditions\n"
+	       "  4    SDOG_WARNING    warning conditions\n"
+	       "  5    SDOG_NOTICE     normal but significant conditions\n"
+	       "  6    SDOG_INFO       informational notices\n"
+	       "  7    SDOG_DEBUG      debugging messages\n");
 }
 
 static int create_pidfile(const char *filename)
@@ -311,11 +301,64 @@ static void init_cache_type(char *arg)
 	}
 }
 
+static char jpath[PATH_MAX];
+static bool jskip;
+static ssize_t jsize;
+#define MIN_JOURNAL_SIZE (64) /* 64M */
+
+static void init_journal_arg(char *arg)
+{
+	const char *d = "dir=", *sz = "size=", *sp = "skip";
+	int dl = strlen(d), szl = strlen(sz), spl = strlen(sp);
+
+	if (!strncmp(d, arg, dl)) {
+		arg += dl;
+		sprintf(jpath, "%s", arg);
+	} else if (!strncmp(sz, arg, szl)) {
+		arg += szl;
+		jsize = strtoll(arg, NULL, 10);
+		if (jsize < MIN_JOURNAL_SIZE || jsize == LLONG_MAX) {
+			fprintf(stderr, "invalid size %s, "
+				"must be bigger than %u(M)\n", arg,
+				MIN_JOURNAL_SIZE);
+			exit(1);
+		}
+	} else if (!strncmp(sp, arg, spl)) {
+		jskip = true;
+	} else {
+		fprintf(stderr, "invalid paramters %s\n", arg);
+		exit(1);
+	}
+}
+
+static int init_work_queues(void)
+{
+	if (init_wqueue_eventfd())
+		return -1;
+
+	sys->gateway_wqueue = init_work_queue("gway", false);
+	sys->io_wqueue = init_work_queue("io", false);
+	sys->recovery_wqueue = init_work_queue("rw", false);
+	sys->deletion_wqueue = init_work_queue("deletion", true);
+	sys->block_wqueue = init_work_queue("block", true);
+	sys->sockfd_wqueue = init_work_queue("sockfd", true);
+	if (is_object_cache_enabled()) {
+		sys->reclaim_wqueue = init_work_queue("reclaim", true);
+		if (!sys->reclaim_wqueue)
+			return -1;
+	}
+	if (!sys->gateway_wqueue || !sys->io_wqueue || !sys->recovery_wqueue ||
+	    !sys->deletion_wqueue || !sys->block_wqueue || !sys->sockfd_wqueue)
+			return -1;
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	int ch, longindex;
 	int ret, port = SD_LISTEN_PORT;
-	const char *dir = DEFAULT_OBJECT_DIR;
+	const char *dirp = DEFAULT_OBJECT_DIR;
+	char *dir;
 	bool is_daemon = true;
 	bool to_stdout = false;
 	int log_level = SDOG_INFO;
@@ -332,9 +375,13 @@ int main(int argc, char **argv)
 	unsigned char buf[sizeof(struct in6_addr)];
 	int ipv4 = 0;
 	int ipv6 = 0;
+	struct option *long_options;
+	const char *short_options;
 
 	signal(SIGPIPE, SIG_IGN);
 
+	long_options = build_long_options(sheep_options);
+	short_options = build_short_options(sheep_options);
 	while ((ch = getopt_long(argc, argv, short_options, long_options,
 				 &longindex)) >= 0) {
 		switch (ch) {
@@ -376,6 +423,9 @@ int main(int argc, char **argv)
 		case 'd':
 			/* removed soon. use loglevel instead */
 			log_level = SDOG_DEBUG;
+			break;
+		case 'D':
+			sys->backend_dio = true;
 			break;
 		case 'g':
 			/* same as '-v 0' */
@@ -426,7 +476,13 @@ int main(int argc, char **argv)
 			init_cache_type(optarg);
 			break;
 		case 'j':
-			sys->use_journal = true;
+			uatomic_set_true(&sys->use_journal);
+			parse_arg(optarg, ",", init_journal_arg);
+			if (!jsize) {
+				fprintf(stderr,
+					"you must specify size for journal\n");
+				exit(1);
+			}
 			break;
 		case 'b':
 			/* validate provided address using inet_pton */
@@ -443,6 +499,11 @@ int main(int argc, char **argv)
 		case 'h':
 			usage(0);
 			break;
+		case 'v':
+			fprintf(stdout, "Sheepdog daemon version %s\n",
+				PACKAGE_VERSION);
+			exit(0);
+			break;
 		default:
 			usage(1);
 			break;
@@ -454,7 +515,17 @@ int main(int argc, char **argv)
 	}
 
 	if (optind != argc)
-		dir = argv[optind];
+		dirp = argv[optind];
+
+	ret = init_base_path(dirp);
+	if (ret)
+		exit(1);
+
+	dir = realpath(dirp, NULL);
+	if (!dir) {
+		fprintf(stderr, "%m\n");
+		exit(1);
+	}
 
 	snprintf(path, sizeof(path), "%s/" LOG_FILE_NAME, dir);
 
@@ -463,19 +534,15 @@ int main(int argc, char **argv)
 	if (is_daemon && daemon(0, 0))
 		exit(1);
 
-	ret = init_base_path(dir);
-	if (ret)
-		exit(1);
-
 	ret = log_init(program_name, LOG_SPACE_SIZE, to_stdout, log_level, path);
 	if (ret)
 		exit(1);
 
-	ret = init_store(dir);
+	ret = init_event(EPOLL_SIZE);
 	if (ret)
 		exit(1);
 
-	ret = init_event(EPOLL_SIZE);
+	ret = init_global_pathnames(dir);
 	if (ret)
 		exit(1);
 
@@ -487,31 +554,47 @@ int main(int argc, char **argv)
 	if (ret)
 		exit(1);
 
-	ret = create_cluster(port, zone, nr_vnodes, explicit_addr);
-	if (ret) {
-		eprintf("failed to create sheepdog cluster\n");
-		exit(1);
-	}
-
 	local_req_init();
 
 	ret = init_signal();
 	if (ret)
 		exit(1);
 
-	sys->gateway_wqueue = init_work_queue("gway", false);
-	sys->io_wqueue = init_work_queue("io", false);
-	sys->recovery_wqueue = init_work_queue("rw", false);
-	sys->deletion_wqueue = init_work_queue("deletion", true);
-	sys->block_wqueue = init_work_queue("block", true);
-	sys->sockfd_wqueue = init_work_queue("sockfd", true);
-	if (is_object_cache_enabled()) {
-		sys->reclaim_wqueue = init_work_queue("reclaim", true);
-		if (!sys->reclaim_wqueue)
+	/* This function must be called before create_cluster() */
+	ret = init_disk_space(dir);
+	if (ret)
+		exit(1);
+
+	ret = create_cluster(port, zone, nr_vnodes, explicit_addr);
+	if (ret) {
+		eprintf("failed to create sheepdog cluster\n");
+		exit(1);
+	}
+
+	/* We should init journal file before backend init */
+	if (uatomic_is_true(&sys->use_journal)) {
+		if (!strlen(jpath))
+			/* internal journal */
+			memcpy(jpath, dir, strlen(dir));
+		dprintf("%s, %zu, %d\n", jpath, jsize, jskip);
+		ret = journal_file_init(jpath, jsize, jskip);
+		if (ret)
 			exit(1);
 	}
-	if (!sys->gateway_wqueue || !sys->io_wqueue || !sys->recovery_wqueue ||
-	    !sys->deletion_wqueue || !sys->block_wqueue || !sys->sockfd_wqueue)
+
+	/*
+	 * After this function, we are multi-threaded.
+	 *
+	 * Put those init functions that need single threaded environment, for
+	 * e.g, signal handling, above this call and those need multi-threaded
+	 * environment, for e.g, work queues below.
+	 */
+	ret = init_work_queues();
+	if (ret)
+		exit(1);
+
+	ret = init_store(dir);
+	if (ret)
 		exit(1);
 
 	ret = trace_init();
@@ -529,6 +612,7 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
+	free(dir);
 	vprintf(SDOG_NOTICE, "sheepdog daemon (version %s) started\n", PACKAGE_VERSION);
 
 	while (sys->nr_outstanding_reqs != 0 ||

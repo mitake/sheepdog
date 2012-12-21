@@ -122,7 +122,8 @@ struct cluster_info {
 	uint32_t object_cache_size;
 	bool object_cache_directio;
 
-	bool use_journal;
+	uatomic_bool use_journal;
+	bool backend_dio;
 	bool upgrade; /* upgrade data layout before starting service
 		       * if necessary*/
 };
@@ -183,6 +184,7 @@ int default_remove_object(uint64_t oid);
 int default_purge_obj(void);
 int for_each_object_in_wd(int (*func)(uint64_t oid, void *arg), bool cleanup,
 			  void *arg);
+int err_to_sderr(uint64_t oid, int err);
 
 extern struct list_head store_drivers;
 #define add_store_driver(driver)                                 \
@@ -204,7 +206,6 @@ static inline struct store_driver *find_store_driver(const char *name)
 extern struct cluster_info *sys;
 extern struct store_driver *sd_store;
 extern char *obj_path;
-extern char *mnt_path;
 extern char *jrnl_path;
 extern char *epoch_path;
 extern mode_t def_fmode;
@@ -220,7 +221,10 @@ int create_listen_port(char *bindaddr, int port);
 int init_unix_domain_socket(const char *dir);
 
 int init_store(const char *dir);
+int init_global_pathnames(const char *d);
 int init_base_path(const char *dir);
+int init_obj_path(const char *d);
+int init_disk_space(const char *d);
 
 int fill_vdi_copy_list(void *data);
 int get_vdi_copy_number(uint32_t vid);
@@ -418,4 +422,7 @@ static inline bool is_disk_cache_enabled(void)
 	return !!(sys->enabled_cache_type & CACHE_TYPE_DISK);
 }
 
+/* journal_file.c */
+int journal_file_init(const char *path, size_t size, bool skip);
+int journal_file_write(uint64_t oid, const char *buf, size_t size, off_t, bool);
 #endif

@@ -247,7 +247,7 @@ int init_base_path(const char *d)
 
 #define OBJ_PATH "/obj/"
 
-static int init_obj_path(const char *base_path)
+int init_obj_path(const char *base_path)
 {
 	int len;
 
@@ -274,37 +274,6 @@ static int init_epoch_path(const char *base_path)
 	sprintf(epoch_path, "%s" EPOCH_PATH, base_path);
 
 	return init_path(epoch_path, NULL);
-}
-
-static int init_mnt_path(const char *base_path)
-{
-	int ret;
-	FILE *fp;
-	struct mntent *mnt;
-	struct stat s, ms;
-
-	ret = stat(base_path, &s);
-	if (ret)
-		return 1;
-
-	fp = setmntent(MOUNTED, "r");
-	if (!fp)
-		return 1;
-
-	while ((mnt = getmntent(fp))) {
-		ret = stat(mnt->mnt_dir, &ms);
-		if (ret)
-			continue;
-
-		if (ms.st_dev == s.st_dev) {
-			mnt_path = strdup(mnt->mnt_dir);
-			break;
-		}
-	}
-
-	endmntent(fp);
-
-	return 0;
 }
 
 #define JRNL_PATH "/journal/"
@@ -368,7 +337,7 @@ static int init_store_driver(void)
 	return sd_store->init(obj_path);
 }
 
-static int init_disk_space(const char *base_path)
+int init_disk_space(const char *base_path)
 {
 	int ret = SD_RES_SUCCESS;
 	uint64_t space_size = 0;
@@ -402,7 +371,8 @@ out:
 	return ret;
 }
 
-int init_store(const char *d)
+/* Initilize all the global pathnames used internally */
+int init_global_pathnames(const char *d)
 {
 	int ret;
 
@@ -414,10 +384,6 @@ int init_store(const char *d)
 	if (ret)
 		return ret;
 
-	ret = init_mnt_path(d);
-	if (ret)
-		return ret;
-
 	ret = init_jrnl_path(d);
 	if (ret)
 		return ret;
@@ -426,9 +392,12 @@ int init_store(const char *d)
 	if (ret)
 		return ret;
 
-	ret = init_disk_space(d);
-	if (ret)
-		return ret;
+	return 0;
+}
+
+int init_store(const char *d)
+{
+	int ret;
 
 	if (!sys->gateway_only) {
 		ret = init_store_driver();

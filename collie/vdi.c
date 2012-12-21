@@ -49,6 +49,7 @@ struct get_vdi_info {
 	const char *tag;
 	uint32_t vid;
 	uint32_t snapid;
+	uint8_t nr_copies;
 };
 
 static int parse_option_size(const char *value, uint64_t *ret)
@@ -205,14 +206,22 @@ static void get_oid(uint32_t vid, const char *name, const char *tag,
 
 	if (info->name) {
 		if (info->tag && info->tag[0]) {
-			if (!strcmp(name, info->name) && !strcmp(tag, info->tag))
+			if (!strcmp(name, info->name) &&
+			    !strcmp(tag, info->tag)) {
 				info->vid = vid;
+			info->nr_copies = i->nr_copies;
+			}
 		} else if (info->snapid) {
-			if (!strcmp(name, info->name) && snapid == info->snapid)
+			if (!strcmp(name, info->name) &&
+			    snapid == info->snapid) {
 				info->vid = vid;
+				info->nr_copies = i->nr_copies;
+			}
 		} else {
-			if (!strcmp(name, info->name))
+			if (!strcmp(name, info->name)) {
 				info->vid = vid;
+				info->nr_copies = i->nr_copies;
+			}
 		}
 	}
 }
@@ -855,7 +864,7 @@ static int vdi_object(int argc, char **argv)
 	return EXIT_SUCCESS;
 }
 
-static int print_obj_epoch(uint64_t oid)
+static int do_track_object(uint64_t oid, uint8_t nr_copies)
 {
 	int i, j, fd, ret;
 	struct sd_req hdr;
@@ -867,17 +876,7 @@ static int print_obj_epoch(uint64_t oid)
 	char host[128];
 
 	log_length = sd_epoch * sizeof(struct epoch_log);
-again:
-	logs = malloc(log_length);
-	if (!logs) {
-		if (log_length < 10) {
-			fprintf(stderr, "No memory to allocate.\n");
-			return EXIT_SYSFAIL;
-		}
-		log_length /= 2;
-		goto again;
-	}
-
+	logs = xmalloc(log_length);
 	fd = connect_to(sdhost, sdport);
 	if (fd < 0)
 		goto error;
@@ -891,18 +890,34 @@ again:
 	if (ret != 0)
 		goto error;
 
-	if (rsp->result != SD_RES_SUCCESS)
+	if (rsp->result != SD_RES_SUCCESS) {
 		printf("%s\n", sd_strerror(rsp->result));
+		goto error;
+	}
 
 	nr_logs = rsp->data_length / sizeof(struct epoch_log);
 	for (i = nr_logs - 1; i >= 0; i--) {
-		vnodes_nr = nodes_to_vnodes(logs[i].nodes, logs[i].nr_nodes, vnodes);
 		printf("\nobj %"PRIx64" locations at epoch %d, copies = %d\n",
-		       oid, logs[i].epoch, logs[i].nr_copies);
+		       oid, logs[i].epoch, nr_copies);
 		printf("---------------------------------------------------\n");
-		oid_to_vnodes(vnodes, vnodes_nr, oid, logs[i].nr_copies,
-			      vnode_buf);
-		for (j = 0; j < logs[i].nr_copies; j++) {
+
+		/*
+		 * When # of nodes is less than nr_copies, we only print
+		 * remaining nodes that holds all the remaining copies.
+		 */
+		if (logs[i].nr_nodes < nr_copies) {
+			for (j = 0; j < logs[i].nr_nodes; j++) {
+				addr_to_str(host, sizeof(host),
+					    logs[i].nodes[j].nid.addr,
+					    logs[i].nodes[j].nid.port);
+				printf("%s\n", host);
+			}
+			continue;
+		}
+		vnodes_nr = nodes_to_vnodes(logs[i].nodes,
+					    logs[i].nr_nodes, vnodes);
+		oid_to_vnodes(vnodes, vnodes_nr, oid, nr_copies, vnode_buf);
+		for (j = 0; j < nr_copies; j++) {
 			addr_to_str(host, sizeof(host), vnode_buf[j]->nid.addr,
 				    vnode_buf[j]->nid.port);
 			printf("%s\n", host);
@@ -921,7 +936,9 @@ static int vdi_track(int argc, char **argv)
 	const char *vdiname = argv[optind];
 	unsigned idx = vdi_cmd_data.index;
 	struct get_vdi_info info;
+	struct get_data_oid_info oid_info = {0};
 	uint32_t vid;
+	uint8_t nr_copies;
 
 	memset(&info, 0, sizeof(info));
 	info.name = vdiname;
@@ -933,6 +950,7 @@ static int vdi_track(int argc, char **argv)
 		return EXIT_SYSFAIL;
 
 	vid = info.vid;
+	nr_copies = info.nr_copies;
 	if (vid == 0) {
 		fprintf(stderr, "VDI not found\n");
 		return EXIT_MISSING;
@@ -941,37 +959,37 @@ static int vdi_track(int argc, char **argv)
 	if (idx == ~0) {
 		printf("Tracking the inode object 0x%" PRIx32 " with %d nodes\n",
 		       vid, sd_nodes_nr);
-		print_obj_epoch(vid_to_vdi_oid(vid));
-	} else {
-		struct get_data_oid_info oid_info = {0};
-
-		oid_info.success = false;
-		oid_info.idx = idx;
-
-		if (idx >= MAX_DATA_OBJS) {
-			printf("The offset is too large!\n");
-			exit(EXIT_FAILURE);
-		}
-
-		parse_objs(vid_to_vdi_oid(vid), get_data_oid,
-					&oid_info, SD_DATA_OBJ_SIZE);
-
-		if (oid_info.success) {
-			if (oid_info.data_oid) {
-				printf("Tracking the object 0x%" PRIx64
-				       " (the inode vid 0x%" PRIx32 " idx %u)"
-					   " with %d nodes\n",
-				       oid_info.data_oid, vid, idx, sd_nodes_nr);
-				print_obj_epoch(oid_info.data_oid);
-
-			} else
-				printf("The inode object 0x%" PRIx32 " idx %u is not allocated\n",
-				       vid, idx);
-		} else
-			fprintf(stderr, "Failed to read the inode object 0x%"PRIx32"\n", vid);
+		return do_track_object(vid_to_vdi_oid(vid), nr_copies);
 	}
 
-	return EXIT_SUCCESS;
+	oid_info.success = false;
+	oid_info.idx = idx;
+
+	if (idx >= MAX_DATA_OBJS) {
+		printf("The offset is too large!\n");
+		goto err;
+	}
+
+	parse_objs(vid_to_vdi_oid(vid), get_data_oid,
+		   &oid_info, SD_DATA_OBJ_SIZE);
+
+	if (!oid_info.success) {
+		fprintf(stderr, "Failed to read the inode object 0x%"PRIx32"\n",
+			vid);
+		goto err;
+	}
+	if (!oid_info.data_oid) {
+		printf("The inode object 0x%"PRIx32" idx %u is not allocated\n",
+		       vid, idx);
+		goto err;
+	}
+	printf("Tracking the object 0x%" PRIx64
+	       " (the inode vid 0x%" PRIx32 " idx %u)"
+	       " with %d nodes\n",
+	       oid_info.data_oid, vid, idx, sd_nodes_nr);
+	return do_track_object(oid_info.data_oid, nr_copies);
+err:
+	return EXIT_FAILURE;
 }
 
 static int find_vdi_attr_oid(const char *vdiname, const char *tag, uint32_t snapid,
@@ -1839,6 +1857,83 @@ out:
 	return ret;
 }
 
+static int vdi_cache_flush(int argc, char **argv)
+{
+	const char *vdiname = argv[optind++];
+	struct sd_req hdr;
+	uint32_t vid;
+	int ret = EXIT_SUCCESS;
+
+	ret = find_vdi_name(vdiname, vdi_cmd_data.snapshot_id,
+			    vdi_cmd_data.snapshot_tag, &vid, 0);
+	if (ret < 0) {
+		fprintf(stderr, "Failed to open VDI %s\n", vdiname);
+		ret = EXIT_FAILURE;
+		goto out;
+	}
+
+	sd_init_req(&hdr, SD_OP_FLUSH_DEL_CACHE);
+	hdr.obj.oid = vid_to_vdi_oid(vid);
+
+	ret = send_light_req(&hdr, sdhost, sdport);
+	if (ret) {
+		fprintf(stderr, "failed to execute request\n");
+		return EXIT_FAILURE;
+	}
+out:
+	return ret;
+}
+
+static int vdi_cache_delete(int argc, char **argv)
+{
+	const char *vdiname = argv[optind++];
+	struct sd_req hdr;
+	uint32_t vid;
+	int ret = EXIT_SUCCESS;
+
+	ret = find_vdi_name(vdiname, vdi_cmd_data.snapshot_id,
+			    vdi_cmd_data.snapshot_tag, &vid, 0);
+	if (ret < 0) {
+		fprintf(stderr, "Failed to open VDI %s\n", vdiname);
+		ret = EXIT_FAILURE;
+		goto out;
+	}
+
+	sd_init_req(&hdr, SD_OP_DELETE_CACHE);
+	hdr.obj.oid = vid_to_vdi_oid(vid);
+
+	ret = send_light_req(&hdr, sdhost, sdport);
+	if (ret) {
+		fprintf(stderr, "failed to execute request\n");
+		return EXIT_FAILURE;
+	}
+out:
+	return ret;
+}
+
+static struct subcommand vdi_cache_cmd[] = {
+	{"flush", NULL, NULL, "flush the cache of the vdi specified.",
+	 NULL, 0, vdi_cache_flush},
+	{"delete", NULL, NULL, "delete the cache of the vdi specified in all nodes.",
+	 NULL, 0, vdi_cache_delete},
+	{NULL,},
+};
+
+static int vdi_cache(int argc, char **argv)
+{
+	int i;
+
+	for (i = 0; vdi_cache_cmd[i].name; i++) {
+		if (!strcmp(vdi_cache_cmd[i].name, argv[3])) {
+			optind++;
+			return vdi_cache_cmd[i].fn(argc, argv);
+		}
+	}
+
+	subcommand_usage(argv[1], argv[2], EXIT_FAILURE);
+	return EXIT_FAILURE;
+}
+
 static struct subcommand vdi_cmd[] = {
 	{"check", "<vdiname>", "saph", "check and repair image's consistency",
 	 NULL, SUBCMD_FLAG_NEED_NODELIST|SUBCMD_FLAG_NEED_THIRD_ARG,
@@ -1894,6 +1989,9 @@ static struct subcommand vdi_cmd[] = {
 	{"restore", "<vdiname> <backup>", "saph", "restore snapshot images from a backup",
 	 NULL, SUBCMD_FLAG_NEED_NODELIST|SUBCMD_FLAG_NEED_THIRD_ARG,
 	 vdi_restore, vdi_options},
+	{"cache", NULL, "saph", "Run 'collie vdi cache' for more information\n",
+	 vdi_cache_cmd, SUBCMD_FLAG_NEED_THIRD_ARG,
+	 vdi_cache, vdi_options},
 	{NULL,},
 };
 

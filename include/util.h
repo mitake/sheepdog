@@ -38,6 +38,7 @@
 #endif
 
 #define notrace __attribute__((no_instrument_function))
+#define __packed __attribute((packed))
 
 #define uninitialized_var(x) (x = x)
 
@@ -81,6 +82,7 @@ extern ssize_t xpread(int fd, void *buf, size_t count, off_t offset);
 extern ssize_t xpwrite(int fd, const void *buf, size_t count, off_t offset);
 extern void pstrcpy(char *buf, int buf_size, const char *str);
 extern int rmdir_r(char *dir_path);
+extern int is_numeric(const char *p);
 
 void trim_zero_sectors(void *buf, uint64_t *offset, uint32_t *len);
 void set_trimmed_sectors(void *buf, uint64_t offset, uint32_t len,

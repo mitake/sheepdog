@@ -137,10 +137,8 @@ static int post_cluster_new_vdi(const struct sd_req *req, struct sd_rsp *rsp,
 	int ret = rsp->result;
 
 	vprintf(SDOG_INFO, "done %d %ld\n", ret, nr);
-	if (ret == SD_RES_SUCCESS) {
+	if (ret == SD_RES_SUCCESS)
 		set_bit(nr, sys->vdi_inuse);
-		add_vdi_copy_number(nr, rsp->vdi.copies);
-	}
 
 	return ret;
 }
@@ -560,12 +558,33 @@ static int cluster_cleanup(const struct sd_req *req, struct sd_rsp *rsp,
 	return ret;
 }
 
+static int cluster_notify_vdi_add(const struct sd_req *req, struct sd_rsp *rsp,
+				  void *data)
+{
+	uint32_t vid = *(uint32_t *)data;
+	uint32_t nr_copies = *(uint32_t *)((char *)data + sizeof(vid));
+
+	add_vdi_copy_number(vid, nr_copies);
+
+	return SD_RES_SUCCESS;
+}
+
 static int cluster_notify_vdi_del(const struct sd_req *req, struct sd_rsp *rsp,
 				  void *data)
 {
 	uint32_t vid = *(uint32_t *)data;
 
 	return objlist_cache_cleanup(vid);
+}
+
+static int cluster_delete_cache(const struct sd_req *req, struct sd_rsp *rsp,
+				void *data)
+{
+	uint32_t vid = oid_to_vid(req->obj.oid);
+
+	object_cache_delete(vid);
+
+	return SD_RES_SUCCESS;
 }
 
 static int cluster_recovery_completion(const struct sd_req *req,
@@ -655,9 +674,10 @@ static int local_get_snap_file(struct request *req)
 	return ret;
 }
 
+/* Return SD_RES_INVALID_PARMS to ask client not to send flush req again */
 static int local_flush_vdi(struct request *req)
 {
-	int ret = SD_RES_SUCCESS;
+	int ret = SD_RES_INVALID_PARMS;
 
 	if (is_object_cache_enabled()) {
 		ret = object_cache_flush_vdi(req);
@@ -801,46 +821,19 @@ static int do_create_and_write_obj(struct siocb *iocb, struct sd_req *hdr,
 	return sd_store->create_and_write(hdr->obj.oid, iocb);
 }
 
-static int do_write_obj(struct siocb *iocb, struct sd_req *hdr, uint32_t epoch,
-			void *data)
-{
-	uint64_t oid = hdr->obj.oid;
-	int ret = SD_RES_SUCCESS;
-	void *jd = NULL;
-
-	iocb->buf = data;
-	iocb->length = hdr->data_length;
-	iocb->offset = hdr->obj.offset;
-
-	if (is_vdi_obj(oid) && sys->use_journal) {
-		struct strbuf buf = STRBUF_INIT;
-
-		strbuf_addf(&buf, "%s%016" PRIx64, obj_path, oid);
-		jd = jrnl_begin(data, hdr->data_length, hdr->obj.offset,
-				buf.buf, jrnl_path);
-		if (!jd) {
-			strbuf_release(&buf);
-			return SD_RES_EIO;
-		}
-		ret = sd_store->write(oid, iocb);
-		jrnl_end(jd);
-		strbuf_release(&buf);
-	} else
-		ret = sd_store->write(oid, iocb);
-
-	return ret;
-}
-
 int peer_write_obj(struct request *req)
 {
 	struct sd_req *hdr = &req->rq;
-	uint32_t epoch = hdr->epoch;
-	struct siocb iocb;
+	struct siocb iocb = { };
+	uint64_t oid = hdr->obj.oid;
 
-	memset(&iocb, 0, sizeof(iocb));
-	iocb.epoch = epoch;
+	iocb.epoch = hdr->epoch;
 	iocb.flags = hdr->flags;
-	return do_write_obj(&iocb, hdr, epoch, req->data);
+	iocb.buf = req->data;
+	iocb.length = hdr->data_length;
+	iocb.offset = hdr->obj.offset;
+
+	return sd_store->write(oid, &iocb);
 }
 
 int peer_create_and_write_obj(struct request *req)
@@ -987,6 +980,19 @@ static struct sd_op_template sd_ops[] = {
 		.type = SD_OP_TYPE_CLUSTER,
 		.force = true,
 		.process_main = cluster_notify_vdi_del,
+	},
+
+	[SD_OP_NOTIFY_VDI_ADD] = {
+		.name = "NOTIFY_VDI_ADD",
+		.type = SD_OP_TYPE_CLUSTER,
+		.force = true,
+		.process_main = cluster_notify_vdi_add,
+	},
+
+	[SD_OP_DELETE_CACHE] = {
+		.name = "DELETE_CACHE",
+		.type = SD_OP_TYPE_CLUSTER,
+		.process_main = cluster_delete_cache,
 	},
 
 	[SD_OP_COMPLETE_RECOVERY] = {

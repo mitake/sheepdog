@@ -24,6 +24,7 @@
 #include <linux/list.h>
 #include <asm/atomic.h>
 #include <net/inet_common.h>
+#include <linux/inet.h>
 #include "sheepdog_proto.h"
 
 #define SHEEP_OBJECT_SIZE (4 * 1024 * 1024)

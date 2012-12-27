@@ -16,6 +16,7 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <zookeeper/zookeeper.h>
+#include <pthread.h>
 
 #include "cluster.h"
 #include "event.h"
@@ -23,9 +24,7 @@
 #include "util.h"
 #include "rbtree.h"
 
-#define SESSION_TIMEOUT 10000		/* millisecond */
-#define MEMBER_CREATE_TIMEOUT SESSION_TIMEOUT
-#define MEMBER_CREATE_INTERVAL 10	/* millisecond */
+#define SESSION_TIMEOUT 30000		/* millisecond */
 
 #define BASE_ZNODE "/sheepdog"
 #define QUEUE_ZNODE BASE_ZNODE "/queue"
@@ -51,24 +50,28 @@ enum zk_event_type {
 };
 
 struct zk_node {
+	struct list_head list;
 	struct rb_node rb;
 	struct sd_node node;
+	bool callbacked;
+	bool gone;
 };
 
 struct zk_event {
-	struct list_head list;
-	bool callbacked;
 	enum zk_event_type type;
 	struct zk_node sender;
 	enum cluster_join_result join_result;
+	size_t msg_len;
+	size_t nr_nodes;
 	size_t buf_len;
 	uint8_t buf[SD_MAX_EVENT_BUF_SIZE];
 };
 
 static struct sd_node sd_nodes[SD_MAX_NODES];
 static size_t nr_sd_nodes;
-struct rb_root zk_node_root = RB_ROOT;
-static LIST_HEAD(zk_block_event_list);
+static struct rb_root zk_node_root = RB_ROOT;
+static pthread_rwlock_t zk_tree_lock = PTHREAD_RWLOCK_INITIALIZER;
+static LIST_HEAD(zk_block_list);
 
 static struct zk_node *zk_tree_insert(struct zk_node *new)
 {
@@ -96,7 +99,7 @@ static struct zk_node *zk_tree_insert(struct zk_node *new)
 	return NULL; /* insert successfully */
 }
 
-static struct zk_node *zk_tree_search(const struct node_id *nid)
+static struct zk_node *zk_tree_search_nolock(const struct node_id *nid)
 {
 	struct rb_node *n = zk_node_root.rb_node;
 	struct zk_node *t;
@@ -117,6 +120,17 @@ static struct zk_node *zk_tree_search(const struct node_id *nid)
 	return NULL;
 }
 
+
+static inline struct zk_node *zk_tree_search(const struct node_id *nid)
+{
+	struct zk_node *n;
+
+	pthread_rwlock_rdlock(&zk_tree_lock);
+	n = zk_tree_search_nolock(nid);
+	pthread_rwlock_unlock(&zk_tree_lock);
+	return n;
+}
+
 /* zookeeper API wrapper */
 static zhandle_t *zhandle;
 static struct zk_node this_node;
@@ -128,7 +142,7 @@ static inline ZOOAPI int zk_delete_node(const char *path, int version)
 		rc = zoo_delete(zhandle, path, version);
 	} while (rc == ZOPERATIONTIMEOUT || rc == ZCONNECTIONLOSS);
 	if (rc != ZOK)
-		eprintf("failed, path:%s, rc:%d\n", path, rc);
+		eprintf("failed, path:%s, %s\n", path, zerror(rc));
 	return rc;
 }
 
@@ -142,7 +156,7 @@ zk_init_node(const char *path)
 	} while (rc == ZOPERATIONTIMEOUT || rc == ZCONNECTIONLOSS);
 
 	if (rc != ZOK && rc != ZNODEEXISTS)
-		panic("failed, path:%s, rc:%d\n", path, rc);
+		panic("failed, path:%s, %s\n", path, zerror(rc));
 }
 
 static inline ZOOAPI int
@@ -154,8 +168,26 @@ zk_create_node(const char *path, const char *value, int valuelen,
 	do {
 		rc = zoo_create(zhandle, path, value, valuelen, acl,
 				flags, path_buffer, path_buffer_len);
+		if (rc != ZOK && rc != ZNODEEXISTS)
+			eprintf("failed, path:%s, %s\n", path, zerror(rc));
 	} while (rc == ZOPERATIONTIMEOUT || rc == ZCONNECTIONLOSS);
 	return rc;
+}
+
+/*
+ * FIXME: ZOPERATIONTIMEOUT or ZCONNECTIONLOSS will cause duplicate seq node of
+ * the same event that we can't handle at all. Panic out in any error case would
+ * be the safest option.
+ */
+static inline ZOOAPI void
+zk_create_seq_node(const char *path, const char *value, int valuelen,
+		   char *path_buffer, int path_buffer_len)
+{
+	int rc;
+	rc = zoo_create(zhandle, path, value, valuelen, &ZOO_OPEN_ACL_UNSAFE,
+			ZOO_SEQUENCE, path_buffer, path_buffer_len);
+	if (rc != ZOK)
+		panic("failed, path:%s, %s\n", path, zerror(rc));
 }
 
 static inline ZOOAPI int zk_get_data(const char *path, void *buffer,
@@ -165,6 +197,8 @@ static inline ZOOAPI int zk_get_data(const char *path, void *buffer,
 	do {
 		rc = zoo_get(zhandle, path, 1, (char *)buffer,
 			     buffer_len, NULL);
+		if (rc != ZOK)
+			eprintf("failed, path:%s, %s\n", path, zerror(rc));
 	} while (rc == ZOPERATIONTIMEOUT || rc == ZCONNECTIONLOSS);
 	return rc;
 }
@@ -177,7 +211,7 @@ zk_set_data(const char *path, const char *buffer, int buflen, int version)
 		rc = zoo_set(zhandle, path, buffer, buflen, version);
 	} while (rc == ZOPERATIONTIMEOUT || rc == ZCONNECTIONLOSS);
 	if (rc != ZOK)
-		panic("failed, path:%s, rc:%d\n", path, rc);
+		panic("failed, path:%s, %s\n", path, zerror(rc));
 	return rc;
 }
 
@@ -186,6 +220,8 @@ static inline ZOOAPI int zk_node_exists(const char *path)
 	int rc;
 	do {
 		rc = zoo_exists(zhandle, path, 1, NULL);
+		if (rc != ZOK && rc != ZNONODE)
+			eprintf("failed, path:%s, %s\n", path, zerror(rc));
 	} while (rc == ZOPERATIONTIMEOUT || rc == ZCONNECTIONLOSS);
 
 	return rc;
@@ -199,7 +235,7 @@ static inline ZOOAPI void zk_get_children(const char *path,
 		rc = zoo_get_children(zhandle, path, 1, strings);
 	} while (rc == ZOPERATIONTIMEOUT || rc == ZCONNECTIONLOSS);
 	if (rc != ZOK)
-		panic("failed:%s, rc:%d\n", path, rc);
+		panic("failed, path:%s, %s\n", path, zerror(rc));
 }
 
 /* ZooKeeper-based queue give us an totally ordered events */
@@ -215,22 +251,20 @@ static bool zk_queue_peek(void)
 
 	rc = zk_node_exists(path);
 	if (rc == ZOK)
-		return false;
+		return true;
 
-	return true;
+	return false;
 }
 
 static void zk_queue_push(struct zk_event *ev)
 {
 	static bool first_push = true;
-	int len, ret;
+	int len;
 	char path[256], buf[256];
 
 	len = (char *)(ev->buf) - (char *)ev + ev->buf_len;
 	sprintf(path, "%s/", QUEUE_ZNODE);
-	ret = zk_create_node(path, (char *)ev, len,
-			     &ZOO_OPEN_ACL_UNSAFE, ZOO_SEQUENCE, buf,
-			     sizeof(buf));
+	zk_create_seq_node(path, (char *)ev, len, buf, sizeof(buf));
 	if (first_push) {
 		int32_t seq;
 
@@ -240,20 +274,25 @@ static void zk_queue_push(struct zk_event *ev)
 		first_push = false;
 	}
 
-	if (ret == ZOK)
-		dprintf("create:%s, queue_pos:%010"PRId32", len:%d\n",
-			buf, queue_pos, len);
+	dprintf("create path:%s, queue_pos:%010"PRId32", len:%d\n",
+		buf, queue_pos, len);
 }
 
-/*
- * Change the event in place and expect the dedicated handler to be called
- * via zk_watcher which wakes up one of the zk_event_handlers.
- */
-static int zk_queue_push_back(struct zk_event *ev)
+static inline void *zk_event_sd_nodes(struct zk_event *ev)
 {
-	int len;
-	char path[256];
+	return (char *)ev->buf + ev->msg_len;
+}
 
+/* Change the join event in place and piggyback the nodes information. */
+static void push_join_response(struct zk_event *ev)
+{
+	char path[256];
+	int len;
+
+	ev->type = EVENT_JOIN_RESPONSE;
+	ev->nr_nodes = nr_sd_nodes;
+	memcpy(zk_event_sd_nodes(ev), sd_nodes,
+	       nr_sd_nodes * sizeof(struct sd_node));
 	queue_pos--;
 
 	len = (char *)(ev->buf) - (char *)ev + ev->buf_len;
@@ -261,31 +300,19 @@ static int zk_queue_push_back(struct zk_event *ev)
 	zk_set_data(path, (char *)ev, len, -1);
 	dprintf("update path:%s, queue_pos:%010"PRId32", len:%d\n",
 		path, queue_pos, len);
-
-	return 0;
 }
 
-static int zk_queue_pop(struct zk_event *ev)
+static void zk_queue_pop_advance(struct zk_event *ev)
 {
 	int len;
 	char path[256];
 
-	if (zk_queue_peek())
-		return -1;
-
 	len = sizeof(*ev);
 	sprintf(path, QUEUE_ZNODE "/%010"PRId32, queue_pos);
 	assert(zk_get_data(path, ev, &len) == ZOK);
-	dprintf("read path:%s, type:%d, len:%d\n", path, ev->type, len);
-
-	/* watch next and kick next event if any */
+	dprintf("%s, type:%d, len:%d, pos:%"PRId32"\n",
+		path, ev->type, len, queue_pos);
 	queue_pos++;
-	sprintf(path, QUEUE_ZNODE "/%010"PRId32, queue_pos);
-	if (zk_node_exists(path) == ZOK)
-		/* Someone has created this node, go kick event handler */
-		eventfd_write(efd, 1);
-
-	return 0;
 }
 
 static int zk_member_empty(void)
@@ -300,14 +327,31 @@ static inline void zk_tree_add(struct zk_node *node)
 {
 	struct zk_node *zk = malloc(sizeof(*zk));
 	*zk = *node;
-	if (zk_tree_insert(zk))
+	pthread_rwlock_wrlock(&zk_tree_lock);
+	if (zk_tree_insert(zk)) {
 		free(zk);
+		goto out;
+	}
+	/*
+	 * Even node list will be built later, we need this because in master
+	 * transfer case, we need this information to destroy the tree.
+	 */
+	sd_nodes[nr_sd_nodes++] = zk->node;
+out:
+	pthread_rwlock_unlock(&zk_tree_lock);
+}
+
+static inline void zk_tree_del_nolock(struct zk_node *node)
+{
+	rb_erase(&node->rb, &zk_node_root);
+	free(node);
 }
 
 static inline void zk_tree_del(struct zk_node *node)
 {
-	rb_erase(&node->rb, &zk_node_root);
-	free(node);
+	pthread_rwlock_wrlock(&zk_tree_lock);
+	zk_tree_del_nolock(node);
+	pthread_rwlock_unlock(&zk_tree_lock);
 }
 
 static inline void zk_tree_destroy(void)
@@ -315,11 +359,13 @@ static inline void zk_tree_destroy(void)
 	struct zk_node *zk;
 	int i;
 
+	pthread_rwlock_wrlock(&zk_tree_lock);
 	for (i = 0; i < nr_sd_nodes; i++) {
-		zk = zk_tree_search(&sd_nodes[i].nid);
+		zk = zk_tree_search_nolock(&sd_nodes[i].nid);
 		if (zk)
-			zk_tree_del(zk);
+			zk_tree_del_nolock(zk);
 	}
+	pthread_rwlock_unlock(&zk_tree_lock);
 }
 
 static inline void build_node_list(void)
@@ -343,20 +389,22 @@ static inline int zk_master_create(void)
 
 static bool is_master(void)
 {
-	struct zk_node *zk;
+	struct rb_node *n;
+	struct zk_node *zk = NULL;
 
 	if (!nr_sd_nodes) {
-		if (zk_member_empty()) {
-			if (zk_master_create() == ZOK)
-				return true;
-			else
-				return false;
-		} else
+		if (zk_member_empty())
+			return true;
+		else
 			return false;
 	}
 
-	zk = rb_entry(rb_first(&zk_node_root), struct zk_node, rb);
-	if (node_eq(&zk->node, &this_node.node))
+	for (n = rb_first(&zk_node_root); n; n = rb_next(n)) {
+		zk = rb_entry(n, struct zk_node, rb);
+		if (!zk->gone)
+			break;
+	}
+	if (zk && node_eq(&zk->node, &this_node.node))
 		return true;
 
 	return false;
@@ -367,33 +415,6 @@ static void zk_queue_init(void)
 	zk_init_node(BASE_ZNODE);
 	zk_init_node(QUEUE_ZNODE);
 	zk_init_node(MEMBER_ZNODE);
-}
-
-static void zk_member_init(void)
-{
-	int rc, len;
-	struct String_vector strs;
-	struct zk_node znode;
-	char path[256];
-
-	if (zk_member_empty())
-		return;
-
-	FOR_EACH_ZNODE(MEMBER_ZNODE, path, &strs) {
-		len = sizeof(znode);
-		rc = zk_get_data(path, &znode, &len);
-		if (rc != ZOK)
-			continue;
-
-		switch (rc) {
-		case ZOK:
-			zk_tree_add(&znode);
-		case ZNONODE:
-			break;
-		default:
-			panic("zk_get_data failed:%s, rc:%d\n", path, rc);
-		}
-	}
 }
 
 static int add_event(enum zk_event_type type, struct zk_node *znode, void *buf,
@@ -426,6 +447,8 @@ static void zk_watcher(zhandle_t *zh, int type, int state, const char *path,
 		/* kick off the event handler */
 		eventfd_write(efd, 1);
 	} else if (type == ZOO_DELETED_EVENT) {
+		struct zk_node *n;
+
 		ret = sscanf(path, MEMBER_ZNODE "/%s", str);
 		if (ret != 1)
 			return;
@@ -433,9 +456,35 @@ static void zk_watcher(zhandle_t *zh, int type, int state, const char *path,
 		p++;
 		str_to_node(p, &znode.node);
 		/* FIXME: remove redundant leave events */
-		add_event(EVENT_LEAVE, &znode, NULL, 0);
+		pthread_rwlock_rdlock(&zk_tree_lock);
+		n = zk_tree_search_nolock(&znode.node.nid);
+		if (n)
+			n->gone = true;
+		pthread_rwlock_unlock(&zk_tree_lock);
+		if (n)
+			add_event(EVENT_LEAVE, &znode, NULL, 0);
 	}
 
+}
+
+/*
+ * We plcaehode the enough space to piggyback the nodes information on join
+ * response message so that every node can see the same membership view.
+ */
+static int add_join_event(void *msg, size_t msg_len)
+{
+	struct zk_event ev;
+	size_t len = msg_len + sizeof(struct sd_node) * SD_MAX_NODES;
+
+	assert(len <= SD_MAX_EVENT_BUF_SIZE);
+	ev.type = EVENT_JOIN_REQUEST;
+	ev.sender = this_node;
+	ev.msg_len = msg_len;
+	ev.buf_len = len;
+	if (msg)
+		memcpy(ev.buf, msg, msg_len);
+	zk_queue_push(&ev);
+	return 0;
 }
 
 static int zk_join(const struct sd_node *myself,
@@ -453,7 +502,11 @@ static int zk_join(const struct sd_node *myself,
 		exit(1);
 	}
 
-	return add_event(EVENT_JOIN_REQUEST, &this_node, opaque, opaque_len);
+	/* For concurrent nodes setup, we allow only one to continue */
+	while (zk_member_empty() && zk_master_create() != ZOK)
+		;/* wait */
+
+	return add_join_event(opaque, opaque_len);
 }
 
 static int zk_leave(void)
@@ -486,10 +539,10 @@ static void zk_handle_join_request(struct zk_event *ev)
 		queue_pos--;
 		return;
 	}
+
 	res = sd_check_join_cb(&ev->sender.node, ev->buf);
 	ev->join_result = res;
-	ev->type = EVENT_JOIN_RESPONSE;
-	zk_queue_push_back(ev);
+	push_join_response(ev);
 	if (res == CJ_RES_MASTER_TRANSFER) {
 		eprintf("failed to join sheepdog cluster: "
 			"please retry when master is up\n");
@@ -499,41 +552,56 @@ static void zk_handle_join_request(struct zk_event *ev)
 	dprintf("I'm the master now\n");
 }
 
+static void watch_all_nodes(void)
+{
+	struct String_vector strs;
+	struct zk_node znode;
+	char path[256];
+	int len = sizeof(znode);
+
+	if (zk_member_empty())
+		return;
+
+	FOR_EACH_ZNODE(MEMBER_ZNODE, path, &strs) {
+		zk_get_data(path, &znode, &len);
+	}
+}
+
+static void init_node_list(struct zk_event *ev)
+{
+	uint8_t *p = zk_event_sd_nodes(ev);
+	size_t node_nr = ev->nr_nodes;
+	int i;
+
+	dprintf("%zu\n", node_nr);
+	for (i = 0; i < node_nr; i++) {
+		struct zk_node zk;
+		mempcpy(&zk.node, p, sizeof(struct sd_node));
+		zk_tree_add(&zk);
+		p += sizeof(struct sd_node);
+	}
+
+	watch_all_nodes();
+}
+
 static void zk_handle_join_response(struct zk_event *ev)
 {
 	char path[256];
 
 	dprintf("JOIN RESPONSE\n");
-	if (is_master() &&
-	    !node_eq(&ev->sender.node, &this_node.node)) {
-		/* wait util the member node has been created */
-		int retry = MEMBER_CREATE_TIMEOUT / MEMBER_CREATE_INTERVAL;
-		sprintf(path, MEMBER_ZNODE"/%s", node_to_str(&ev->sender.node));
-		while (retry && zk_node_exists(path) == ZNONODE) {
-			usleep(MEMBER_CREATE_INTERVAL * 1000);
-			retry--;
-		}
-		if (retry <= 0) {
-			dprintf("%s failed to create member, ignore it\n",
-				node_to_str(&ev->sender.node));
-			return;
-		}
-	}
-
 	if (node_eq(&ev->sender.node, &this_node.node))
-		zk_member_init();
+		/* newly joined node */
+		init_node_list(ev);
 
 	if (ev->join_result == CJ_RES_MASTER_TRANSFER)
 		/*
-		 * Sheepdog assumes that only one sheep(master will kill
-		 * itself) is alive in MASTER_TRANSFER scenario. So only
-		 * the joining sheep will run into here.
+		 * Sheepdog assumes that only one sheep is alive in
+		 * MASTER_TRANSFER scenario. So only the joining sheep is
+		 * supposed to return single node view to sd_join_handler().
 		 */
 		zk_tree_destroy();
 
-	zk_tree_add(&ev->sender);
-	dprintf("sender:%s\n", node_to_str(&ev->sender.node));
-
+	dprintf("%s, %d\n", node_to_str(&ev->sender.node), ev->join_result);
 	switch (ev->join_result) {
 	case CJ_RES_SUCCESS:
 	case CJ_RES_JOIN_LATER:
@@ -544,9 +612,10 @@ static void zk_handle_join_response(struct zk_event *ev)
 			zk_create_node(path, (char *)&ev->sender,
 				       sizeof(ev->sender), &ZOO_OPEN_ACL_UNSAFE,
 				       ZOO_EPHEMERAL, NULL, 0);
-		} else {
+		} else
 			zk_node_exists(path);
-		}
+
+		zk_tree_add(&ev->sender);
 		break;
 	default:
 		break;
@@ -557,32 +626,27 @@ static void zk_handle_join_response(struct zk_event *ev)
 			ev->join_result, ev->buf);
 }
 
-/* When block event is deleted from list, we should call this function */
-static void kick_next_block_event(void)
+static void kick_block_event(void)
 {
-	struct zk_event *zke;
+	struct zk_node *block;
 
-	if (list_empty(&zk_block_event_list))
+	if (list_empty(&zk_block_list))
 		return;
-	zke = list_first_entry(&zk_block_event_list, typeof(*zke), list);
-	if (!zke->callbacked)
-		zke->callbacked = sd_block_handler(&zke->sender.node);
+	block = list_first_entry(&zk_block_list, typeof(*block), list);
+	if (!block->callbacked)
+		block->callbacked = sd_block_handler(&block->node);
 }
 
-static bool block_event_list_del(struct zk_node *n)
+static void block_event_list_del(struct zk_node *n)
 {
-	struct zk_event *ev, *t;
-	bool ret = false;
+	struct zk_node *ev, *t;
 
-	list_for_each_entry_safe(ev, t, &zk_block_event_list, list) {
-		if (node_eq(&ev->sender.node, &n->node)) {
+	list_for_each_entry_safe(ev, t, &zk_block_list, list) {
+		if (node_eq(&ev->node, &n->node)) {
 			list_del(&ev->list);
 			free(ev);
-			ret = true;
 		}
 	}
-
-	return ret;
 }
 
 static void zk_handle_leave(struct zk_event *ev)
@@ -594,8 +658,7 @@ static void zk_handle_leave(struct zk_event *ev)
 			node_to_str(&ev->sender.node));
 		return;
 	}
-	if (block_event_list_del(n))
-		kick_next_block_event();
+	block_event_list_del(n);
 	zk_tree_del(n);
 	build_node_list();
 	sd_leave_handler(&ev->sender.node, sd_nodes, nr_sd_nodes);
@@ -603,29 +666,30 @@ static void zk_handle_leave(struct zk_event *ev)
 
 static void zk_handle_block(struct zk_event *ev)
 {
-	struct zk_event *zke = xzalloc(sizeof(*zke));
+	struct zk_node *block = xmalloc(sizeof(*block));
 
 	dprintf("BLOCK\n");
-	*zke = *ev;
-	zke->callbacked = false;
-	list_add_tail(&zke->list, &zk_block_event_list);
-	zke = list_first_entry(&zk_block_event_list, typeof(*zke), list);
-	if (!zke->callbacked)
-		zke->callbacked = sd_block_handler(&zke->sender.node);
+	block->node = ev->sender.node;
+	block->callbacked = false;
+	list_add_tail(&block->list, &zk_block_list);
+	block = list_first_entry(&zk_block_list, typeof(*block), list);
+	if (!block->callbacked)
+		block->callbacked = sd_block_handler(&block->node);
 }
 
 static void zk_handle_unblock(struct zk_event *ev)
 {
-	struct zk_event *zke;
+	struct zk_node *block;
 
 	dprintf("UNBLOCK\n");
-	zke = list_first_entry(&zk_block_event_list, typeof(*zke), list);
-	if (zke->callbacked)
-		add_event(EVENT_NOTIFY, &zke->sender, ev->buf, ev->buf_len);
+	if (list_empty(&zk_block_list))
+		return;
+	block = list_first_entry(&zk_block_list, typeof(*block), list);
+	if (block->callbacked)
+		add_event(EVENT_NOTIFY, block, ev->buf, ev->buf_len);
 
-	list_del(&zke->list);
-	free(zke);
-	kick_next_block_event();
+	list_del(&block->list);
+	free(block);
 }
 
 static void zk_handle_notify(struct zk_event *ev)
@@ -650,22 +714,43 @@ static void zk_event_handler(int listen_fd, int events, void *data)
 	eventfd_t value;
 	struct zk_event ev;
 
+	dprintf("%d, %d\n", events, queue_pos);
 	if (events & EPOLLHUP) {
 		eprintf("zookeeper driver received EPOLLHUP event, exiting.\n");
 		log_close();
 		exit(1);
 	}
 
-	if (eventfd_read(efd, &value) < 0)
+	if (eventfd_read(efd, &value) < 0) {
+		eprintf("%m\n");
 		return;
+	}
 
-	if (zk_queue_pop(&ev) < 0)
-		return;
+	if (!zk_queue_peek())
+		goto kick_block_event;
 
+	zk_queue_pop_advance(&ev);
 	if (ev.type < zk_max_event_handlers && zk_event_handlers[ev.type])
 		zk_event_handlers[ev.type](&ev);
 	else
-		eprintf("unhandled type %d\n", ev.type);
+		panic("unhandled type %d\n", ev.type);
+
+	 /* Someone has created next event, go kick event handler. */
+	if (zk_queue_peek()) {
+		eventfd_write(efd, 1);
+		return;
+	}
+
+kick_block_event:
+	/*
+	 * Kick block event only if there is no nonblock event. We perfer to
+	 * handle nonblock event becasue:
+	 *
+	 * 1. Sheep assuems that unblock() and notify() is a transaction, so we
+	 *    can only kick next block event after sd_notify_handler() is called
+	 * 2. We should process leave/join event as soon as possible.
+	 */
+	kick_block_event();
 }
 
 static int zk_init(const char *option)

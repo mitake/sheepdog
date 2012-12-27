@@ -130,6 +130,7 @@ AC_CONFIG_FILES([Makefile
 		collie/Makefile
 		sheep/Makefile
 		sheepfs/Makefile
+		sheepdev/Makefile
 		include/Makefile
 		script/Makefile
 		lib/Makefile
@@ -212,6 +213,11 @@ AC_ARG_ENABLE([sheepfs],
 	[  --enable-sheepfs         : enable sheepfs],,
 	[ enable_sheepfs=$HAVE_FUSE ],)
 AM_CONDITIONAL(BUILD_SHEEPFS, test x$enable_sheepfs = xyes)
+
+AC_ARG_ENABLE([sheepdev],
+	[  --enable-sheepdev        : enable sheepdev],,
+	[ enable_sheepdev="no" ],)
+AM_CONDITIONAL(BUILD_SHEEPDEV, test x$enable_sheepdev = xyes)
 
 CP=cp
 OS_LDL="-ldl"
@@ -296,6 +302,9 @@ if test "x${enable_sheepfs}" = xyes; then
 	PACKAGE_FEATURES="$PACKAGE_FEATURES sheepfs"
 fi
 
+if test "x${enable_sheepdev}" = xyes; then
+	PACKAGE_FEATURES="$PACKAGE_FEATURES sheepdev"
+fi
 
 # extra warnings
 EXTRA_WARNINGS=""

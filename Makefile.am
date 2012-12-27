@@ -23,6 +23,10 @@ if BUILD_SHEEPFS
 SUBDIRS			+= sheepfs
 endif
 
+if BUILD_SHEEPDEV
+SUBDIRS                 += sheepdev
+endif
+
 install-exec-local:
 	$(INSTALL) -d $(DESTDIR)/${localstatedir}/lib/sheepdog
 

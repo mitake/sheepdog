@@ -1,0 +1,12 @@
+
+MODULE_NAME=sheepdev
+
+EXTRA_CFLAGS := -I$(PWD)/../include
+
+obj-m := $(MODULE_NAME).o
+
+sheepdev-objs := module.o sheep.o connect.o
+
+module.o : sheep.h sheepdog_proto.h
+sheep.o : sheep.h sheepdog_proto.h
+connect.o : sheep.h

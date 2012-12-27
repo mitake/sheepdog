@@ -1,0 +1,8 @@
+all:
+	$(MAKE) -C /lib/modules/`uname -r`/build M=`pwd` modules
+
+clean:
+	$(MAKE) -C /lib/modules/`uname -r`/build M=`pwd` clean
+
+install:
+	$(MAKE) -C /lib/modules/`uname -r`/build M=`pwd` modules_install

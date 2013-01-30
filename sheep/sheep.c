@@ -26,6 +26,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <arpa/inet.h>
+#include <sys/resource.h>
 
 #include "sheep_priv.h"
 #include "trace/trace.h"
@@ -45,6 +46,7 @@ static struct sd_option sheep_options[] = {
 	{'d', "debug", false, "include debug messages in the log"},
 	{'D', "directio", false, "use direct IO for backend store"},
 	{'f', "foreground", false, "make the program run in the foreground"},
+	{'F', "log-format", true, "specify log format"},
 	{'g', "gateway", false, "make the progam run as a gateway mode"},
 	{'h', "help", false, "display this help and exit"},
 	{'i', "ioaddr", true, "use separate network card to handle IO requests"},
@@ -385,6 +387,40 @@ static int init_work_queues(void)
 	return 0;
 }
 
+/*
+ * FIXME: Teach sheep handle EMFILE gracefully.
+ *
+ * For now we only set a large enough vaule to run sheep safely.
+ *
+ * We just estimate we at most run 100 VMs for each node and each VM consumes 10
+ * FDs at peak rush hour.
+ */
+#define SD_RLIM_NOFILE (SD_MAX_NODES * 100 * 10)
+
+static void check_host_env(void)
+{
+	struct rlimit r;
+
+	if (getrlimit(RLIMIT_NOFILE, &r) < 0)
+		sd_eprintf("failed to get nofile %m\n");
+	/*
+	 * 1024 is default for NOFILE on most distributions, which is very
+	 * dangerous to run Sheepdog cluster.
+	 */
+	else if (r.rlim_cur == 1024)
+		sd_eprintf("WARN: Allowed open files 1024 too small, "
+			   "suggested %u\n", SD_RLIM_NOFILE);
+	else if (r.rlim_cur < SD_RLIM_NOFILE)
+		sd_iprintf("Allowed open files %lu, suggested %u\n",
+			   r.rlim_cur, SD_RLIM_NOFILE);
+
+	if (getrlimit(RLIMIT_CORE, &r) < 0)
+		sd_eprintf("failed to get core %m\n");
+	else if (r.rlim_cur < RLIM_INFINITY)
+		sd_iprintf("Allowed core file size %lu, suggested unlimited\n",
+			   r.rlim_cur);
+}
+
 int main(int argc, char **argv)
 {
 	int ch, longindex, ret, port = SD_LISTEN_PORT, io_port = SD_LISTEN_PORT;
@@ -395,6 +431,7 @@ int main(int argc, char **argv)
 	int64_t zone = -1, free_space = 0;
 	struct cluster_driver *cdrv;
 	struct option *long_options;
+	const char *log_format = "default";
 
 	signal(SIGPIPE, SIG_IGN);
 
@@ -530,6 +567,9 @@ int main(int argc, char **argv)
 				PACKAGE_VERSION);
 			exit(0);
 			break;
+		case 'F':
+			log_format = optarg;
+			break;
 		default:
 			usage(1);
 			break;
@@ -560,7 +600,8 @@ int main(int argc, char **argv)
 	if (is_daemon && daemon(0, 0))
 		exit(1);
 
-	ret = log_init(program_name, LOG_SPACE_SIZE, to_stdout, log_level, path);
+	ret = log_init(program_name, LOG_SPACE_SIZE, to_stdout, log_level, path,
+		log_format);
 	if (ret)
 		exit(1);
 
@@ -653,6 +694,7 @@ int main(int argc, char **argv)
 	}
 
 	free(dir);
+	check_host_env();
 	sd_printf(SDOG_NOTICE, "sheepdog daemon (version %s) started\n",
 		PACKAGE_VERSION);
 

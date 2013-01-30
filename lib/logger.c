@@ -31,13 +31,11 @@
 #include <sys/sem.h>
 #include <pthread.h>
 #include <libgen.h>
+#include <sys/time.h>
 
 #include "logger.h"
 #include "util.h"
 
-static int log_vsnprintf(char *buff, size_t size, int prio,
-			 const char *func, int line, const char *fmt,
-			 va_list ap) __attribute__ ((format (printf, 6, 0)));
 static void dolog(int prio, const char *func, int line, const char *fmt,
 		  va_list ap) __attribute__ ((format (printf, 4, 0)));
 
@@ -58,10 +56,34 @@ struct logarea {
 	int fd;
 };
 
+#define FUNC_NAME_SIZE 32 /* according to C89, including '\0' */
 struct logmsg {
+	struct timeval tv;
 	int prio;
+	char func[FUNC_NAME_SIZE];
+	int line;
+	char worker_name[MAX_THREAD_NAME_LEN];
+	int worker_idx;
+
 	char str[0];
 };
+
+struct log_format {
+	const char *name;
+	int (*formatter)(char *, size_t, const struct logmsg *);
+	struct list_head list;
+};
+
+#define log_format_register(n, formatter_fn)				\
+	static void __attribute__((constructor))			\
+	regist_ ## formatter_fn(void) {					\
+		static struct log_format f =				\
+			{ .name = n, .formatter = formatter_fn };	\
+		list_add(&f.list, &log_formats);			\
+}
+
+static LIST_HEAD(log_formats);
+static struct log_format *format;
 
 static int log_fd = -1;
 static __thread const char *worker_name;
@@ -149,62 +171,129 @@ static void notrace free_logarea(void)
 	shmdt(la);
 }
 
-static notrace int log_vsnprintf(char *buff, size_t size, int prio,
-				 const char *func, int line, const char *fmt,
-				 va_list ap)
+static notrace int default_log_formatter(char *buff, size_t size,
+				const struct logmsg *msg)
 {
 	char *p = buff;
-	time_t t = time(NULL);
 	struct tm tm;
+	int worker_name_len = strlen(msg->worker_name);
 
-	localtime_r(&t, &tm);
-
-	strftime(p, size, "%b %2d %H:%M:%S ", &tm);
+	localtime_r(&msg->tv.tv_sec, &tm);
+	strftime(p, size, "%b %2d %H:%M:%S ", (const struct tm *)&tm);
 	p += strlen(p);
 
-	if (worker_name && worker_idx)
-		snprintf(p, size, "[%s %d] ", worker_name, worker_idx);
-	else if (worker_name)
-		snprintf(p, size, "[%s] ", worker_name);
+	if (worker_name_len && msg->worker_idx)
+		snprintf(p, size, "[%s %d] ", msg->worker_name,
+			msg->worker_idx);
+	else if (worker_name_len)
+		snprintf(p, size, "[%s] ", msg->worker_name);
 	else
 		pstrcpy(p, size, "[main] ");
 
 	p += strlen(p);
-	snprintf(p, size - strlen(buff), "%s(%d) ", func, line);
 
+	snprintf(p, size - strlen(buff), "%s(%d) ", msg->func, msg->line);
 	p += strlen(p);
 
-	vsnprintf(p, size - strlen(buff), fmt, ap);
-
+	snprintf(p, size - strlen(buff), "%s", (char *)msg->str);
 	p += strlen(p);
 
 	return p - buff;
 }
+log_format_register("default", default_log_formatter);
+
+static notrace int json_log_formatter(char *buff, size_t size,
+				const struct logmsg *msg)
+{
+	int i, body_len;
+	char *p = buff;
+
+	snprintf(p, size, "{");
+	p += strlen(p);
+
+	snprintf(p, size - strlen(buff), "\"second\": %lu", msg->tv.tv_sec);
+	p += strlen(p);
+
+	snprintf(p, size - strlen(buff), ", \"usecond\": %lu", msg->tv.tv_usec);
+	p += strlen(p);
+
+	if (strlen(msg->worker_name))
+		snprintf(p, size - strlen(buff), ", \"worker_name\": \"%s\"",
+			msg->worker_name);
+	else
+		snprintf(p, size - strlen(buff), ", \"worker_name\": \"main\"");
+
+	p += strlen(p);
+
+	snprintf(p, size - strlen(buff), ", \"worker_idx\": %d",
+		msg->worker_idx);
+	p += strlen(p);
+
+	snprintf(p, size - strlen(buff), ", \"func\": \"%s\"", msg->func);
+	p += strlen(p);
+
+	snprintf(p, size - strlen(buff), ", \"line\": %d", msg->line);
+	p += strlen(p);
+
+	snprintf(p, size - strlen(buff), ", \"body\": \"");
+	p += strlen(p);
+
+	body_len = strlen(msg->str) - 1;
+	/* this - 1 eliminates '\n', dirty... */
+	for (i = 0; i < body_len; i++) {
+		if (msg->str[i] == '"')
+			*p++ = '\\';
+		*p++ = msg->str[i];
+	}
+
+	snprintf(p, size - strlen(buff), "\"}\n");
+	p += strlen(p);
+
+	return p - buff;
+}
+log_format_register("json", json_log_formatter);
 
 /*
  * this one can block under memory pressure
  */
 static notrace void log_syslog(const struct logmsg *msg)
 {
-	char *str = (char *)msg->str;
+	char str[MAX_MSG_SIZE];
 
+	memset(str, 0, MAX_MSG_SIZE);
+	format->formatter(str, MAX_MSG_SIZE, msg);
 	if (log_fd >= 0)
 		xwrite(log_fd, str, strlen(str));
 	else
 		syslog(msg->prio, "%s", str);
 }
 
+static void init_logmsg(struct logmsg *msg, struct timeval *tv, int prio,
+			const char *func, int line)
+{
+	msg->tv = *tv;
+	msg->prio = prio;
+	pstrcpy(msg->func, FUNC_NAME_SIZE, func);
+	msg->line = line;
+	if (worker_name)
+		pstrcpy(msg->worker_name, MAX_THREAD_NAME_LEN, worker_name);
+	msg->worker_idx = worker_idx;
+}
+
 static notrace void dolog(int prio, const char *func, int line,
 		const char *fmt, va_list ap)
 {
-	char str[MAX_MSG_SIZE];
-	int len;
+	char buf[sizeof(struct logmsg) + MAX_MSG_SIZE];
+	char *str = buf + sizeof(struct logmsg);
+	struct logmsg *msg = (struct logmsg *)buf;
+	int len = 0;
+	struct timeval tv;
 
-	len = log_vsnprintf(str, sizeof(str), prio, func, line, fmt, ap);
+	gettimeofday(&tv, NULL);
+	len = vsnprintf(str, MAX_MSG_SIZE, fmt, ap);
 
 	if (la) {
 		struct sembuf ops;
-		struct logmsg *msg;
 
 		ops.sem_num = 0;
 		ops.sem_flg = SEM_UNDO;
@@ -221,7 +310,7 @@ static notrace void dolog(int prio, const char *func, int line,
 		else {
 			/* ok, we can stage the msg in the area */
 			msg = (struct logmsg *)la->tail;
-			msg->prio = prio;
+			init_logmsg(msg, &tv, prio, func, line);
 			memcpy(msg->str, str, len + 1);
 			la->tail += sizeof(struct logmsg) + len + 1;
 		}
@@ -232,7 +321,13 @@ static notrace void dolog(int prio, const char *func, int line,
 			return;
 		}
 	} else {
-		xwrite(fileno(stderr), str, len);
+		char str_final[MAX_MSG_SIZE];
+
+		memset(str_final, 0, MAX_MSG_SIZE);
+		memset(msg, 0, sizeof(struct logmsg));
+		init_logmsg(msg, &tv, prio, func, line);
+		len = format->formatter(str_final, MAX_MSG_SIZE, msg);
+		xwrite(fileno(stderr), str_final, len);
 		fflush(stderr);
 	}
 }
@@ -405,9 +500,17 @@ static notrace void logger(char *log_dir, char *outfile)
 }
 
 notrace int log_init(const char *program_name, int size, bool to_stdout,
-		     int level, char *outfile)
+		int level, char *outfile, const char *format_name)
 {
 	char log_dir[PATH_MAX], tmp[PATH_MAX];
+
+	list_for_each_entry(format, &log_formats, list) {
+		if (!strcmp(format->name, format_name))
+			goto format_found;
+	}
+
+	panic("invalid format: %s\n", format_name);
+format_found:
 
 	log_level = level;
 

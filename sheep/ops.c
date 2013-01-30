@@ -200,7 +200,7 @@ static int post_cluster_del_vdi(const struct sd_req *req, struct sd_rsp *rsp,
 	return ret;
 }
 
-static int cluster_get_vdi_info(struct request *req)
+static int local_get_vdi_info(struct request *req)
 {
 	const struct sd_req *hdr = &req->rq;
 	struct sd_rsp *rsp = &req->rp;
@@ -357,6 +357,22 @@ static int cluster_get_vdi_attr(struct request *req)
 	rsp->vdi.copies = nr_copies;
 
 	return ret;
+}
+
+static int local_release_vdi(struct request *req)
+{
+	uint32_t vid = req->rq.vdi.base_vdi_id;
+
+	if (!vid) {
+		sd_iprintf("Some VDI failed to release the object cache. "
+			   "Probably you are running old QEMU.\n");
+		return SD_RES_SUCCESS;
+	}
+
+	object_cache_flush_vdi(vid);
+	object_cache_delete(vid);
+
+	return SD_RES_SUCCESS;
 }
 
 static int local_get_store_list(struct request *req)
@@ -680,7 +696,8 @@ static int local_flush_vdi(struct request *req)
 	int ret = SD_RES_INVALID_PARMS;
 
 	if (is_object_cache_enabled()) {
-		ret = object_cache_flush_vdi(req);
+		uint32_t vid = oid_to_vid(req->rq.obj.oid);
+		ret = object_cache_flush_vdi(vid);
 		if (ret != SD_RES_SUCCESS)
 			return ret;
 	}
@@ -906,18 +923,6 @@ static struct sd_op_template sd_ops[] = {
 		.process_main = post_cluster_del_vdi,
 	},
 
-	[SD_OP_GET_VDI_INFO] = {
-		.name = "GET_VDI_INFO",
-		.type = SD_OP_TYPE_CLUSTER,
-		.process_work = cluster_get_vdi_info,
-	},
-
-	[SD_OP_LOCK_VDI] = {
-		.name = "LOCK_VDI",
-		.type = SD_OP_TYPE_CLUSTER,
-		.process_work = cluster_get_vdi_info,
-	},
-
 	[SD_OP_MAKE_FS] = {
 		.name = "MAKE_FS",
 		.type = SD_OP_TYPE_CLUSTER,
@@ -935,11 +940,6 @@ static struct sd_op_template sd_ops[] = {
 		.name = "GET_VDI_ATTR",
 		.type = SD_OP_TYPE_CLUSTER,
 		.process_work = cluster_get_vdi_attr,
-	},
-
-	[SD_OP_RELEASE_VDI] = {
-		.name = "RELEASE_VDI",
-		.type = SD_OP_TYPE_CLUSTER,
 	},
 
 	[SD_OP_FORCE_RECOVER] = {
@@ -998,6 +998,24 @@ static struct sd_op_template sd_ops[] = {
 	},
 
 	/* local operations */
+	[SD_OP_GET_VDI_INFO] = {
+		.name = "GET_VDI_INFO",
+		.type = SD_OP_TYPE_LOCAL,
+		.process_work = local_get_vdi_info,
+	},
+
+	[SD_OP_LOCK_VDI] = {
+		.name = "LOCK_VDI",
+		.type = SD_OP_TYPE_LOCAL,
+		.process_work = local_get_vdi_info,
+	},
+
+	[SD_OP_RELEASE_VDI] = {
+		.name = "RELEASE_VDI",
+		.type = SD_OP_TYPE_LOCAL,
+		.process_work = local_release_vdi,
+	},
+
 	[SD_OP_GET_STORE_LIST] = {
 		.name = "GET_STORE_LIST",
 		.type = SD_OP_TYPE_LOCAL,

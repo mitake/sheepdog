@@ -79,7 +79,7 @@ int rx(struct connection *conn, enum conn_state next_state)
 	}
 
 	if (ret < 0) {
-		if (errno != EAGAIN)
+		if (errno != EAGAIN && errno != EINTR)
 			conn->c_rx_state = C_IO_CLOSED;
 		return 0;
 	}
@@ -99,7 +99,7 @@ notrace int tx(struct connection *conn, enum conn_state next_state)
 
 	ret = write(conn->fd, conn->tx_buf, conn->tx_length);
 	if (ret < 0) {
-		if (errno != EAGAIN)
+		if (errno != EAGAIN && errno != EINTR)
 			conn->c_tx_state = C_IO_CLOSED;
 		return 0;
 	}
@@ -267,16 +267,24 @@ success:
 	return fd;
 }
 
-static int net_do_read(int sockfd, void *buf, int len, bool retry_eagain)
+int do_read(int sockfd, void *buf, int len, bool (*need_retry)(uint32_t epoch),
+	    uint32_t epoch)
 {
-	int ret;
+	int ret, repeat = MAX_RETRY_COUNT;
 reread:
 	ret = read(sockfd, buf, len);
 	if (ret < 0 || !ret) {
 		if (errno == EINTR)
 			goto reread;
-		if (retry_eagain && errno == EAGAIN)
+		/*
+		 * Since we set timeout for read, we'll get EAGAIN even for
+		 * blocking sockfd.
+		 */
+		if (errno == EAGAIN && repeat &&
+		    (need_retry == NULL || need_retry(epoch))) {
+			repeat--;
 			goto reread;
+		}
 
 		sd_eprintf("failed to read from socket: %d, %d(%m)\n",
 			ret, errno);
@@ -289,11 +297,6 @@ reread:
 		goto reread;
 
 	return 0;
-}
-
-int do_read(int sockfd, void *buf, int len)
-{
-	return net_do_read(sockfd, buf, len, false);
 }
 
 static void forward_iov(struct msghdr *msg, int len)
@@ -309,14 +312,25 @@ static void forward_iov(struct msghdr *msg, int len)
 }
 
 
-static int do_write(int sockfd, struct msghdr *msg, int len)
+static int do_write(int sockfd, struct msghdr *msg, int len,
+		    bool (*need_retry)(uint32_t), uint32_t epoch)
 {
-	int ret;
+	int ret, repeat = MAX_RETRY_COUNT;
 rewrite:
 	ret = sendmsg(sockfd, msg, 0);
 	if (ret < 0) {
 		if (errno == EINTR)
 			goto rewrite;
+		/*
+		 * Since we set timeout for write, we'll get EAGAIN even for
+		 * blocking sockfd.
+		 */
+		if (errno == EAGAIN && repeat &&
+		    (need_retry == NULL || need_retry(epoch))) {
+			repeat--;
+			goto rewrite;
+		}
+
 		sd_eprintf("failed to write to socket: %m\n");
 		return 1;
 	}
@@ -330,7 +344,8 @@ rewrite:
 	return 0;
 }
 
-int send_req(int sockfd, struct sd_req *hdr, void *data, unsigned int wlen)
+int send_req(int sockfd, struct sd_req *hdr, void *data, unsigned int wlen,
+	     bool (*need_retry)(uint32_t epoch), uint32_t epoch)
 {
 	int ret;
 	struct msghdr msg;
@@ -350,7 +365,7 @@ int send_req(int sockfd, struct sd_req *hdr, void *data, unsigned int wlen)
 		iov[1].iov_len = wlen;
 	}
 
-	ret = do_write(sockfd, &msg, sizeof(*hdr) + wlen);
+	ret = do_write(sockfd, &msg, sizeof(*hdr) + wlen, need_retry, epoch);
 	if (ret) {
 		sd_eprintf("failed to send request %x, %d: %m\n", hdr->opcode,
 			wlen);
@@ -360,7 +375,8 @@ int send_req(int sockfd, struct sd_req *hdr, void *data, unsigned int wlen)
 	return ret;
 }
 
-int net_exec_req(int sockfd, struct sd_req *hdr, void *data, bool retry_eagain)
+int exec_req(int sockfd, struct sd_req *hdr, void *data,
+	     bool (*need_retry)(uint32_t epoch), uint32_t epoch)
 {
 	int ret;
 	struct sd_rsp *rsp = (struct sd_rsp *)hdr;
@@ -374,10 +390,10 @@ int net_exec_req(int sockfd, struct sd_req *hdr, void *data, bool retry_eagain)
 		rlen = hdr->data_length;
 	}
 
-	if (send_req(sockfd, hdr, data, wlen))
+	if (send_req(sockfd, hdr, data, wlen, need_retry, epoch))
 		return 1;
 
-	ret = net_do_read(sockfd, rsp, sizeof(*rsp), retry_eagain);
+	ret = do_read(sockfd, rsp, sizeof(*rsp), need_retry, epoch);
 	if (ret) {
 		sd_eprintf("failed to read a response\n");
 		return 1;
@@ -387,7 +403,7 @@ int net_exec_req(int sockfd, struct sd_req *hdr, void *data, bool retry_eagain)
 		rlen = rsp->data_length;
 
 	if (rlen) {
-		ret = net_do_read(sockfd, data, rlen, retry_eagain);
+		ret = do_read(sockfd, data, rlen, need_retry, epoch);
 		if (ret) {
 			sd_eprintf("failed to read the response data\n");
 			return 1;
@@ -395,11 +411,6 @@ int net_exec_req(int sockfd, struct sd_req *hdr, void *data, bool retry_eagain)
 	}
 
 	return 0;
-}
-
-int exec_req(int sockfd, struct sd_req *hdr, void *data)
-{
-	return net_exec_req(sockfd, hdr, data, false);
 }
 
 char *addr_to_str(char *str, int size, const uint8_t *addr, uint16_t port)

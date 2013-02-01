@@ -167,7 +167,7 @@ again:
 		 * If IO NIC is down, epoch isn't incremented, so we can't retry
 		 * for ever.
 		 */
-		if (req->rq.epoch == sys_epoch() && repeat) {
+		if (sheep_need_retry(req->rq.epoch) && repeat) {
 			repeat--;
 			goto again;
 		}
@@ -175,7 +175,7 @@ again:
 		nr_sent = wi->nr_sent;
 		/* XXX Blinedly close all the connections */
 		for (i = 0; i < nr_sent; i++)
-			finish_one_write_err(wi, i);
+			sheep_del_sockfd(wi->ent[i].nid, wi->ent[i].sfd);
 
 		err_ret = SD_RES_NETWORK_ERROR;
 		goto finish_write;
@@ -193,7 +193,8 @@ again:
 			finish_one_write_err(wi, i);
 			goto finish_write;
 		}
-		if (do_read(pi.pfds[i].fd, rsp, sizeof(*rsp))) {
+		if (do_read(pi.pfds[i].fd, rsp, sizeof(*rsp), sheep_need_retry,
+			    req->rq.epoch)) {
 			sd_eprintf("remote node might have gone away\n");
 			err_ret = SD_RES_NETWORK_ERROR;
 			finish_one_write_err(wi, i);
@@ -290,7 +291,8 @@ static int gateway_forward_request(struct request *req, bool all_node)
 			break;
 		}
 
-		ret = send_req(sfd->fd, &hdr, req->data, wlen);
+		ret = send_req(sfd->fd, &hdr, req->data, wlen,
+			       sheep_need_retry, req->rq.epoch);
 		if (ret) {
 			sheep_del_sockfd(nid, sfd);
 			err_ret = SD_RES_NETWORK_ERROR;

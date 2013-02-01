@@ -7,6 +7,8 @@
 #include "sheepdog_proto.h"
 
 /*
+ * We can't always retry because if only IO NIC is down, we'll retry for ever.
+ *
  * We observed that for a busy node, the response could be as long as 15s, so
  * wait 30s would be a safe value. Even we are false timeouted, the gateway will
  * retry the request and sockfd cache module will repair the false-closes.
@@ -46,13 +48,15 @@ int conn_tx_on(struct connection *conn);
 int conn_rx_off(struct connection *conn);
 int conn_rx_on(struct connection *conn);
 bool is_conn_dead(const struct connection *conn);
-int do_read(int sockfd, void *buf, int len);
+int do_read(int sockfd, void *buf, int len,
+	    bool (*need_retry)(uint32_t), uint32_t);
 int rx(struct connection *conn, enum conn_state next_state);
 int tx(struct connection *conn, enum conn_state next_state);
 int connect_to(const char *name, int port);
-int send_req(int sockfd, struct sd_req *hdr, void *data, unsigned int wlen);
-int exec_req(int sockfd, struct sd_req *hdr, void *data);
-int net_exec_req(int sockfd, struct sd_req *hdr, void *data, bool retry_eagain);
+int send_req(int sockfd, struct sd_req *hdr, void *data, unsigned int wlen,
+	     bool (*need_retry)(uint32_t), uint32_t);
+int exec_req(int sockfd, struct sd_req *hdr, void *,
+	     bool (*need_retry)(uint32_t), uint32_t);
 int create_listen_ports(const char *bindaddr, int port,
 			int (*callback)(int fd, void *), void *data);
 int create_unix_domain_socket(const char *unix_path,

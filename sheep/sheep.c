@@ -145,26 +145,39 @@ static void signal_handler(int listen_fd, int events, void *data)
 	}
 }
 
+static int sigterm_pipe[2];
+
+static void sigterm_handler(int signum)
+{
+	int ret;
+	struct signalfd_siginfo siginfo;
+
+	assert(signum == SIGTERM);
+
+	memset(&siginfo, 0, sizeof(siginfo));
+	siginfo.ssi_signo = SIGTERM;
+	ret = write(sigterm_pipe[1], &siginfo, sizeof(siginfo));
+	if (ret != sizeof(siginfo))
+		panic("handling SIGTERM failed: %m");
+}
+
 static int init_signal(void)
 {
-	sigset_t mask;
 	int ret;
 
 	ret = trace_init_signal();
 	if (ret)
 		return ret;
 
-	sigemptyset(&mask);
-	sigaddset(&mask, SIGTERM);
-	sigprocmask(SIG_BLOCK, &mask, NULL);
+	ret = install_sighandler(SIGTERM, sigterm_handler, true);
+	if (ret < 0)
+		panic("install_sighandler: %m");
 
-	sigfd = signalfd(-1, &mask, SFD_NONBLOCK);
-	if (sigfd < 0) {
-		sd_eprintf("failed to create a signal fd: %m");
-		return -1;
-	}
+	ret = pipe(sigterm_pipe);
+	if (ret < 0)
+		panic("pipe: %m");
 
-	ret = register_event(sigfd, signal_handler, NULL);
+	ret = register_event(sigterm_pipe[0], signal_handler, NULL);
 	if (ret) {
 		sd_eprintf("failed to register signal handler (%d)", ret);
 		return -1;

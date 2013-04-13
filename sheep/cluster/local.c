@@ -28,7 +28,6 @@
 
 static const char *shmfile = "/tmp/sheepdog_shm";
 static int shmfd;
-static int sigfd;
 static int block_event_pos;
 static int nonblock_event_pos;
 static struct local_node this_node;
@@ -503,7 +502,7 @@ static void local_handler(int listen_fd, int events, void *data)
 
 	sd_dprintf("read siginfo");
 
-	ret = read(sigfd, &siginfo, sizeof(siginfo));
+	ret = read(listen_fd, &siginfo, sizeof(siginfo));
 	assert(ret == sizeof(siginfo));
 
 	shm_queue_lock();
@@ -523,9 +522,23 @@ static int local_get_local_addr(uint8_t *myaddr)
 	return 0;
 }
 
+static int sigusr1_pipe[2];
+
+static void sigusr1_handler(int signum)
+{
+	int ret;
+	struct signalfd_siginfo siginfo;
+
+	assert(signum == SIGUSR1);
+
+	siginfo.ssi_signo = SIGUSR1;
+	ret = write(sigusr1_pipe[1], &siginfo, sizeof(siginfo));
+	if (ret != sizeof(siginfo))
+		panic("write: %m");
+}
+
 static int local_init(const char *option)
 {
-	sigset_t mask;
 	int ret;
 	static struct timer t = {
 		.callback = check_pids,
@@ -537,19 +550,17 @@ static int local_init(const char *option)
 
 	shm_queue_init();
 
-	sigemptyset(&mask);
-	sigaddset(&mask, SIGUSR1);
-	sigprocmask(SIG_BLOCK, &mask, NULL);
+	ret = install_sighandler(SIGUSR1, sigusr1_handler, false);
+	if (ret < 0)
+		panic("install_sighandler: %m");
 
-	sigfd = signalfd(-1, &mask, SFD_NONBLOCK);
-	if (sigfd < 0) {
-		sd_eprintf("failed to create a signal fd: %m");
-		return -1;
-	}
+	ret = pipe(sigusr1_pipe);
+	if (ret < 0)
+		panic("pipe: %m");
 
 	add_timer(&t, PROCESS_CHECK_INTERVAL);
 
-	ret = register_event(sigfd, local_handler, NULL);
+	ret = register_event(sigusr1_pipe[0], local_handler, NULL);
 	if (ret) {
 		sd_eprintf("failed to register local event handler (%d)", ret);
 		return -1;

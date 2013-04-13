@@ -556,6 +556,8 @@ int main(int argc, char **argv)
 	sheep_info.port = port;
 	early_log_init(log_format, &sheep_info);
 
+	init_timer();
+
 	if (nr_vnodes == 0) {
 		sys->gateway_only = true;
 		sys->disk_space = 0;

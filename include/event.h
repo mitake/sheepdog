@@ -32,4 +32,6 @@ static inline int register_event(int fd, event_handler_t h, void *data)
 return register_event_prio(fd, h, data, EVENT_PRIO_DEFAULT);
 }
 
+void init_timer(void);
+
 #endif

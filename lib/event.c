@@ -14,7 +14,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/epoll.h>
-#include <sys/timerfd.h>
+#include <signal.h>
+#include <time.h>
 
 #include "list.h"
 #include "util.h"
@@ -26,42 +27,128 @@ static LIST_HEAD(events_list);
 
 #define TICK 1
 
+struct timer_desc {
+	int pipe[2];
+	unsigned int msec;
+
+	timer_t timerid;
+	struct timer *t;
+
+	struct list_head list;
+};
+
+static LIST_HEAD(timer_list);
+
 static void timer_handler(int fd, int events, void *data)
 {
-	struct timer *t = data;
+	struct timer_desc *desc = data;
+	struct timer *t = desc->t;
 	uint64_t val;
+
+	assert(fd == desc->pipe[0]);
 
 	if (read(fd, &val, sizeof(val)) < 0)
 		return;
 
 	t->callback(t->data);
 
+	timer_delete(desc->timerid);
+	list_del(&desc->list);
+
 	unregister_event(fd);
-	close(fd);
+	close(desc->pipe[0]);
+	close(desc->pipe[1]);
+
+	free(desc);
+}
+
+static void insert_timer_desc(struct timer_desc *t)
+{
+	struct timer_desc *p;
+	struct list_head *pred;
+
+	pred = NULL;
+
+	list_for_each_entry(p, &timer_list, list) {
+		if (p->msec < t->msec)
+			continue;
+
+		pred = &p->list;
+		break;
+	}
+
+	if (!pred)
+		pred = &timer_list;
+
+	list_add(&t->list, pred);
 }
 
 void add_timer(struct timer *t, unsigned int mseconds)
 {
+	int ret;
+	struct timer_desc *desc;
 	struct itimerspec it;
-	int tfd;
 
-	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
-	if (tfd < 0) {
-		sd_eprintf("timerfd_create: %m");
-		return;
+	desc = xzalloc(sizeof(*desc));
+	desc->msec = mseconds;
+	INIT_LIST_HEAD(&desc->list);
+
+	ret = timer_create(CLOCK_MONOTONIC, NULL, &desc->timerid);
+	if (ret < 0) {
+		sd_eprintf("timer_create: %m");
+		goto free_timer_desc;
 	}
 
 	memset(&it, 0, sizeof(it));
 	it.it_value.tv_sec = mseconds / 1000;
 	it.it_value.tv_nsec = (mseconds % 1000) * 1000000;
 
-	if (timerfd_settime(tfd, 0, &it, NULL) < 0) {
+	if (timer_settime(desc->timerid, 0, &it, NULL) < 0) {
 		sd_eprintf("timerfd_settime: %m");
-		return;
+		goto del_timer;
 	}
 
-	if (register_event(tfd, timer_handler, t) < 0)
+	ret = pipe(desc->pipe);
+	if (ret < 0) {
+		sd_eprintf("pipe: %m");
+		goto del_timer;
+	}
+
+	if (register_event(desc->pipe[0], timer_handler, desc) < 0) {
 		sd_eprintf("failed to register timer fd");
+		goto close_pipe;
+	}
+
+	desc->t = t;
+	insert_timer_desc(desc);
+
+	return;
+
+close_pipe:
+	close(desc->pipe[0]);
+	close(desc->pipe[1]);
+del_timer:
+	timer_delete(desc->timerid);
+free_timer_desc:
+	free(desc);
+}
+
+static void sigalrm_handler(int signum)
+{
+	struct timer_desc *t;
+	uint64_t val = 0;
+
+	assert(signum == SIGALRM);
+	assert(!list_empty(&timer_list));
+
+	t = list_first_entry(&timer_list, struct timer_desc, list);
+	write(t->pipe[1], &val, sizeof(val));
+}
+
+void init_timer(void)
+{
+	if (install_sighandler(SIGALRM, sigalrm_handler, false) < 0)
+		panic("install_sighandler() failed: %m");
 }
 
 struct event_info {

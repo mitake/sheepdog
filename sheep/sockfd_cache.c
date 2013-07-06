@@ -29,11 +29,19 @@
 
 #include "sheep_priv.h"
 
+#include <stdarg.h>
+
 struct sockfd_cache {
 	struct rb_root root;
 	pthread_rwlock_t lock;
 	int count;
 };
+
+/*
+ * shrink_head: used by shrink_sockfd() for fair shrinking
+ * protected by sockfd_cache.lock
+ */
+static struct rb_node *shrink_head;
 
 static struct sockfd_cache sockfd_cache = {
 	.root = RB_ROOT,
@@ -195,6 +203,9 @@ static bool sockfd_cache_destroy(const struct node_id *nid)
 		sd_dprintf("Some victim still holds it");
 		goto false_out;
 	}
+
+	if (&entry->rb == shrink_head)
+		shrink_head = rb_next(&entry->rb);
 
 	rb_erase(&entry->rb, &sockfd_cache.root);
 	pthread_rwlock_unlock(&sockfd_cache.lock);
@@ -545,4 +556,79 @@ int sheep_exec_req(const struct node_id *nid, struct sd_req *hdr, void *buf)
 bool sheep_need_retry(uint32_t epoch)
 {
 	return sys_epoch() == epoch;
+}
+
+static bool shrink_sockfd(void)
+{
+	bool ret = false;
+
+	pthread_rwlock_wrlock(&sockfd_cache.lock);
+
+	struct rb_node *p = shrink_head ?
+		shrink_head : rb_first(&sockfd_cache.root);
+
+	if (!p) {
+		sd_dprintf("There's no sockfd");
+		goto out;
+	}
+
+	struct rb_node *first = p;
+
+	do {
+		struct sockfd_cache_entry *entry =
+			rb_entry(p, struct sockfd_cache_entry, rb);
+
+		for (int i = 0; i < fds_count; i++) {
+			if (!uatomic_set_true(&entry->fds[i].in_use))
+				/* failed to grab, someone is using */
+				continue;
+
+			if (entry->fds[i].fd == -1) {
+				/* this fd is not used */
+				uatomic_set_false(&entry->fds[i].in_use);
+				continue;
+			}
+
+			sd_dprintf("victim node: %s, fd: %d",
+				nid_to_str(&entry->nid), entry->fds[i].fd);
+			close(entry->fds[i].fd);
+			entry->fds[i].fd = -1;
+			uatomic_set_false(&entry->fds[i].in_use);
+
+			shrink_head = rb_next(p);
+
+			ret = true;
+			goto out;
+		}
+
+		p = rb_next(p);
+		if (!p)
+			p = rb_first(&sockfd_cache.root);
+	} while (first != p);
+
+	sd_dprintf("shrinking couldn't be done");
+
+out:
+	pthread_rwlock_unlock(&sockfd_cache.lock);
+	return ret;
+}
+
+int retry_open(const char *pathname, int flags)
+{
+	int retry_count = 2;
+
+retry:;
+	int fd = open(pathname, flags, sd_def_fmode);
+	if (0 <= fd)
+		return fd;
+
+	if (errno == EMFILE && retry_count--) {
+		if (!shrink_sockfd())
+			/* wait for close() of other threads */
+			usleep(100);
+
+		goto retry;
+	}
+
+	return fd;
 }

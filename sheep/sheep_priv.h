@@ -414,6 +414,7 @@ void sheep_put_sockfd(const struct node_id *, struct sockfd *);
 void sheep_del_sockfd(const struct node_id *, struct sockfd *);
 int sheep_exec_req(const struct node_id *nid, struct sd_req *hdr, void *data);
 bool sheep_need_retry(uint32_t epoch);
+int retry_open(const char *pathname, int flags);
 
 /* journal_file.c */
 int journal_file_init(const char *path, size_t size, bool skip);

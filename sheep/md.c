@@ -497,7 +497,7 @@ static int md_move_object(uint64_t oid, char *old, char *new)
 	int fd, ret = -1;
 	size_t sz = get_objsize(oid);
 
-	fd = open(old, O_RDONLY);
+	fd = retry_open(old, O_RDONLY);
 	if (fd < 0) {
 		sd_eprintf("failed to open %s", old);
 		goto out;

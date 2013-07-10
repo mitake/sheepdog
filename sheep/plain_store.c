@@ -116,7 +116,7 @@ int default_write(uint64_t oid, const struct siocb *iocb)
 
 	get_obj_path(oid, path);
 
-	fd = open(path, flags, sd_def_fmode);
+	fd = retry_open(path, flags);
 	if (fd < 0)
 		return err_to_sderr(path, oid, errno);
 
@@ -235,7 +235,7 @@ static int default_read_from_path(uint64_t oid, char *path,
 	    ret = SD_RES_SUCCESS;
 	ssize_t size;
 
-	fd = open(path, flags);
+	fd = retry_open(path, flags);
 
 	if (fd < 0)
 		return err_to_sderr(path, oid, errno);
@@ -308,7 +308,7 @@ int default_create_and_write(uint64_t oid, const struct siocb *iocb)
 		sync();
 	}
 
-	fd = open(tmp_path, flags, sd_def_fmode);
+	fd = retry_open(tmp_path, flags);
 	if (fd < 0) {
 		if (errno == EEXIST) {
 			/*

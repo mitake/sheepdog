@@ -43,6 +43,8 @@ struct sockfd_cache {
  */
 static struct rb_node *shrink_head;
 
+static bool shrink_sockfd(void);
+
 static struct sockfd_cache sockfd_cache = {
 	.root = RB_ROOT,
 	.lock = PTHREAD_RWLOCK_INITIALIZER,
@@ -392,9 +394,15 @@ grab:
 	}
 
 	/* Create a new cached connection for this node */
+	int retry = 2;
+retry_connect:
 	sd_dprintf("create cache connection %s:%d idx %d", name, port, idx);
 	fd = connect_to(name, port);
 	if (fd < 0) {
+		if (errno == EMFILE && retry--) {
+			if (shrink_sockfd())
+				goto retry_connect;
+		}
 		if (use_io) {
 			sd_eprintf("fallback to non-io connection");
 			fd = connect_to_addr(nid->addr, nid->port);

@@ -155,7 +155,10 @@ _cleanup()
     done
 
     if [[ "$DRIVER" == zoo* ]];then
-        sleep 5 # wait for zookeeper ephemeral node to be deleted
+        ../../tools/zk_control remove "/sheepdog/member"
+        if [ $? -ne 0 ]; then
+            _die "failed to remove members"
+        fi
     fi
 }
 
@@ -190,6 +193,18 @@ _wait_for_sheep_stop()
 		grep LISTEN > /dev/null 2>&1
 	fi
 	if [ $? != 0 ]; then
+	    if [[ "$DRIVER" == zoo* ]];then
+		if [ "$1" == "" ]; then
+		    ../../tools/zk_control remove "/sheepdog/member"
+		else
+		    local path="/sheepdog/member/IPv4 ip:127.0.0.1 port:$((7000+$1))"
+		    ../../tools/zk_control remove "$path"
+		fi
+		if [ $? -ne 0 ]; then
+		    echo "failed to remove members"
+		    break;
+		fi
+	    fi
 	    return
 	fi
 	sleep 1
@@ -321,10 +336,6 @@ _kill_sheep()
     fi
 
     _wait_for_sheep_stop $1
-
-    if [[ "$DRIVER" == zoo* ]];then
-        sleep 3 # wait for zookeeper ephemeral node to be deleted
-    fi
 }
 
 _wait_for_sheep_recovery()
@@ -476,15 +487,14 @@ _random()
 
 _kill_zk_session()
 {
-	local path="/sheepdog/member/IPv4 ip:127.0.0.1 port:700$1"
+	local path="/sheepdog/member/IPv4 ip:127.0.0.1 port:$((7000+$1))"
 	if [[ "$DRIVER" == zoo* ]]; then
-		../../tools/kill_zk_session "$path"
+		../../tools/zk_control kill "$path"
 		if [ $? -ne 0 ]; then
 			_die "failed to kill session"
 		fi
 	else
 		_kill_sheep $1
-		_wait_for_sheep_stop $1
 		_start_sheep $1
 	fi
 }

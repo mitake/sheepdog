@@ -11,12 +11,6 @@
 
 #include "sheep_priv.h"
 
-enum rw_state {
-	RW_PREPARE_LIST, /* the recovery thread is preparing object list */
-	RW_RECOVER_OBJ, /* the thread is recoering objects */
-	RW_NOTIFY_COMPLETION, /* the thread is notifying recovery completion */
-};
-
 /* base structure for the recovery thread */
 struct recovery_work {
 	uint32_t epoch;
@@ -32,7 +26,7 @@ struct recovery_work {
 struct recovery_list_work {
 	struct recovery_work base;
 
-	int count;
+	uint64_t count;
 	uint64_t *oids;
 };
 
@@ -58,7 +52,7 @@ struct recovery_info {
 
 	uint32_t epoch;
 	uint32_t tgt_epoch;
-	uint32_t done;
+	uint64_t done;
 
 	/*
 	 * true when automatic recovery is disabled
@@ -67,11 +61,11 @@ struct recovery_info {
 	bool suspended;
 	bool notify_complete;
 
-	int count;
+	uint64_t count;
 	uint64_t *oids;
 	uint64_t *prio_oids;
-	int nr_prio_oids;
-	int nr_scheduled_prio_oids;
+	uint64_t nr_prio_oids;
+	uint64_t nr_scheduled_prio_oids;
 
 	struct vnode_info *old_vinfo;
 	struct vnode_info *cur_vinfo;
@@ -338,7 +332,7 @@ bool node_in_recovery(void)
 static inline void prepare_schedule_oid(uint64_t oid)
 {
 	struct recovery_info *rinfo = main_thread_get(current_rinfo);
-	int i;
+	uint64_t i;
 
 	for (i = 0; i < rinfo->nr_prio_oids; i++)
 		if (rinfo->prio_oids[i] == oid)
@@ -361,7 +355,7 @@ static inline void prepare_schedule_oid(uint64_t oid)
 	rinfo->prio_oids = xrealloc(rinfo->prio_oids,
 				    rinfo->nr_prio_oids * sizeof(uint64_t));
 	rinfo->prio_oids[rinfo->nr_prio_oids - 1] = oid;
-	sd_dprintf("%"PRIx64" nr_prio_oids %d", oid, rinfo->nr_prio_oids);
+	sd_dprintf("%"PRIx64" nr_prio_oids %"PRIu64, oid, rinfo->nr_prio_oids);
 
 	resume_suspended_recovery();
 }
@@ -369,7 +363,7 @@ static inline void prepare_schedule_oid(uint64_t oid)
 bool oid_in_recovery(uint64_t oid)
 {
 	struct recovery_info *rinfo = main_thread_get(current_rinfo);
-	int i;
+	uint64_t i;
 
 	if (!node_in_recovery())
 		return false;
@@ -511,9 +505,7 @@ static inline void finish_recovery(struct recovery_info *rinfo)
 
 static inline bool oid_in_prio_oids(struct recovery_info *rinfo, uint64_t oid)
 {
-	int i;
-
-	for (i = 0; i < rinfo->nr_prio_oids; i++)
+	for (uint64_t i = 0; i < rinfo->nr_prio_oids; i++)
 		if (rinfo->prio_oids[i] == oid)
 			return true;
 	return false;
@@ -529,7 +521,7 @@ static inline bool oid_in_prio_oids(struct recovery_info *rinfo, uint64_t oid)
  */
 static inline void finish_schedule_oids(struct recovery_info *rinfo)
 {
-	int i, nr_recovered = rinfo->done, new_idx;
+	uint64_t i, nr_recovered = rinfo->done, new_idx;
 	uint64_t *new_oids;
 
 	/* If I am the last oid, done */
@@ -548,7 +540,8 @@ static inline void finish_schedule_oids(struct recovery_info *rinfo)
 		new_oids[new_idx++] = rinfo->oids[i];
 	}
 	/* rw->count should eq new_idx, otherwise something is wrong */
-	sd_dprintf("%snr_recovered %d, nr_prio_oids %d, count %d = new %d",
+	sd_dprintf("%snr_recovered %"PRIu64", nr_prio_oids %"PRIu64", "
+		   "count %"PRIu64" = new %"PRIu64,
 		   rinfo->count == new_idx ? "" : "WARN: ", nr_recovered,
 		   rinfo->nr_prio_oids, rinfo->count, new_idx);
 
@@ -628,7 +621,7 @@ static void recover_object_main(struct work *work)
 	wakeup_requests_on_oid(row->oid);
 	rinfo->done++;
 
-	sd_eprintf("done:%"PRIu32" count:%"PRIu32", oid:%"PRIx64, rinfo->done,
+	sd_eprintf("done:%"PRIu64" count:%"PRIu64", oid:%"PRIx64, rinfo->done,
 		   rinfo->count, row->oid);
 
 	if (rinfo->done < rinfo->count) {
@@ -715,9 +708,9 @@ static void screen_object_list(struct recovery_list_work *rlw,
 {
 	struct recovery_work *rw = &rlw->base;
 	const struct sd_vnode *vnodes[SD_MAX_COPIES];
-	int old_count = rlw->count;
-	int nr_objs;
-	int i, j;
+	uint64_t old_count = rlw->count;
+	uint64_t nr_objs;
+	uint64_t i, j;
 
 	for (i = 0; i < nr_oids; i++) {
 		if (xbsearch(&oids[i], rlw->oids, old_count, obj_cmp))
@@ -792,7 +785,7 @@ again:
 		goto again;
 	}
 
-	sd_dprintf("%d", rlw->count);
+	sd_dprintf("%"PRIu64, rlw->count);
 }
 
 int start_recovery(struct vnode_info *cur_vinfo, struct vnode_info *old_vinfo,
@@ -877,4 +870,19 @@ static void queue_recovery_work(struct recovery_info *rinfo)
 	rw->old_vinfo = grab_vnode_info(rinfo->old_vinfo);
 
 	queue_work(sys->recovery_wqueue, &rw->work);
+}
+
+void get_recovery_state(struct recovery_state *state)
+{
+	struct recovery_info *rinfo = main_thread_get(current_rinfo);
+
+	if (!rinfo) {
+		state->in_recovery = 0;
+		return;
+	}
+
+	state->in_recovery = 1;
+	state->state = rinfo->state;
+	state->nr_finished = rinfo->done;
+	state->nr_total = rinfo->count;
 }

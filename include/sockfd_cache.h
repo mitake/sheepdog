@@ -19,4 +19,6 @@ struct sockfd {
 	int idx;
 };
 
+bool sockfd_shrink(void);
+
 #endif	/* SOCKFD_CACHE_H */

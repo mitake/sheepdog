@@ -428,7 +428,7 @@ static notrace void rotate_log(void)
 			 tm.tm_mday, tm.tm_hour, tm.tm_min);
 		rename(log_nowname, old_logfile);
 	}
-	new_fd = open(log_nowname, O_RDWR | O_CREAT | O_APPEND, 0644);
+	new_fd = xopen(log_nowname, O_RDWR | O_CREAT | O_APPEND, 0644);
 	if (new_fd < 0) {
 		syslog(LOG_ERR, "failed to create new log file\n");
 		exit(1);

@@ -219,7 +219,8 @@ int connect_to(const char *name, int port)
 		if (ret)
 			continue;
 
-		fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+		fd = xsocket(res->ai_family, res->ai_socktype,
+			     res->ai_protocol);
 		if (fd < 0)
 			continue;
 

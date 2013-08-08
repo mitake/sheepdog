@@ -563,7 +563,8 @@ int atomic_create_and_write(const char *path, char *buf, size_t len,
 
 	snprintf(tmp_path, PATH_MAX, "%s.tmp", path);
 again:
-	fd = open(tmp_path, O_WRONLY | O_CREAT | O_SYNC | O_EXCL, sd_def_fmode);
+	fd = xopen(tmp_path, O_WRONLY | O_CREAT | O_SYNC | O_EXCL,
+		   sd_def_fmode);
 	if (fd < 0) {
 		if (errno == EEXIST) {
 			if (force_create) {

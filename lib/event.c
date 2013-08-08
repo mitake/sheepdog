@@ -42,7 +42,7 @@ void add_timer(struct timer *t, unsigned int mseconds)
 	struct itimerspec it;
 	int tfd;
 
-	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+	tfd = xtimerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
 	if (tfd < 0) {
 		sd_eprintf("timerfd_create: %m");
 		return;
@@ -77,7 +77,7 @@ int init_event(int nr)
 	nr_events = nr;
 	events = xcalloc(nr_events, sizeof(struct epoll_event));
 
-	efd = epoll_create(nr);
+	efd = xepoll_create(nr);
 	if (efd < 0) {
 		sd_eprintf("failed to create epoll fd");
 		return -1;

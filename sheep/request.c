@@ -447,7 +447,7 @@ int exec_local_req(struct sd_req *rq, void *data)
 
 	req = alloc_local_request(data, rq->data_length);
 	req->rq = *rq;
-	req->local_req_efd = eventfd(0, 0);
+	req->local_req_efd = xeventfd(0, 0);
 	if (req->local_req_efd < 0) {
 		/* Fake the result to ask for retry */
 		req->rp.result = SD_RES_NETWORK_ERROR;
@@ -818,7 +818,7 @@ static void listen_handler(int listen_fd, int events, void *data)
 	}
 
 	namesize = sizeof(from);
-	fd = accept(listen_fd, (struct sockaddr *)&from, &namesize);
+	fd = xaccept(listen_fd, (struct sockaddr *)&from, &namesize);
 	if (fd < 0) {
 		sd_eprintf("failed to accept a new connection: %m");
 		return;

@@ -338,7 +338,7 @@ static int read_cache_object_noupdate(uint32_t vid, uint32_t idx, void *buf,
 		flags |= O_DIRECT;
 	}
 
-	fd = open(p, flags, sd_def_fmode);
+	fd = xopen(p, flags, sd_def_fmode);
 	if (fd < 0) {
 		sd_eprintf("%m");
 		ret = SD_RES_EIO;
@@ -374,7 +374,7 @@ static int write_cache_object_noupdate(uint32_t vid, uint32_t idx, void *buf,
 		flags |= O_DIRECT;
 	}
 
-	fd = open(p, flags, sd_def_fmode);
+	fd = xopen(p, flags, sd_def_fmode);
 	if (fd < 0) {
 		sd_eprintf("%m");
 		ret = SD_RES_EIO;
@@ -651,7 +651,7 @@ not_found:
 		cache->vid = vid;
 		INIT_RB_ROOT(&cache->lru_tree);
 		create_dir_for(vid);
-		cache->push_efd = eventfd(0, 0);
+		cache->push_efd = xeventfd(0, 0);
 
 		INIT_LIST_HEAD(&cache->dirty_head);
 		INIT_LIST_HEAD(&cache->lru_head);
@@ -749,7 +749,7 @@ static int object_cache_lookup(struct object_cache *oc, uint32_t idx,
 		return lookup_path(path);
 
 	flags |= O_CREAT | O_TRUNC;
-	fd = open(path, flags, sd_def_fmode);
+	fd = xopen(path, flags, sd_def_fmode);
 	if (fd < 0) {
 		sd_dprintf("%s, %m", path);
 		ret = SD_RES_EIO;
@@ -778,7 +778,7 @@ static int create_cache_object(struct object_cache *oc, uint32_t idx,
 
 	snprintf(tmp_path, sizeof(tmp_path), "%s/%06"PRIx32"/%08"PRIx32".tmp",
 		object_cache_dir, oc->vid, idx);
-	fd = open(tmp_path, flags, sd_def_fmode);
+	fd = xopen(tmp_path, flags, sd_def_fmode);
 	if (fd < 0) {
 		if (errno == EEXIST) {
 			sd_dprintf("%08"PRIx32" already created", idx);

@@ -22,8 +22,12 @@
 #include <signal.h>
 #include <sys/xattr.h>
 #include <fcntl.h>
+#include <stdarg.h>
+#include <sys/timerfd.h>
+#include <sys/epoll.h>
 
 #include "util.h"
+#include "sockfd_cache.h"
 
 mode_t sd_def_dmode = S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP | S_IWGRP | S_IXGRP;
 mode_t sd_def_fmode = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP;
@@ -595,3 +599,104 @@ close_fd:
 end:
 	return ret;
 }
+
+int xsocket(int domain, int type, int protocol)
+{
+	int fd;
+
+retry:
+	fd = socket(domain, type, protocol);
+	if (fd < 0) {
+		if (errno == EINTR)
+			goto retry;
+
+		if (errno == EMFILE && sockfd_shrink())
+			goto retry;
+	}
+
+	return fd;
+}
+
+int xaccept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
+{
+	int fd;
+
+retry:
+	fd = accept(sockfd, addr, addrlen);
+	if (fd < 0) {
+		if (errno == EINTR)
+			goto retry;
+
+		if (errno == EMFILE && sockfd_shrink())
+			goto retry;
+	}
+
+	return fd;
+}
+
+int xeventfd(int initval, int flags)
+{
+	int fd;
+
+retry:
+	fd = eventfd(initval, flags);
+	if (fd < 0 && errno == EMFILE) {
+		if (sockfd_shrink())
+			goto retry;
+	}
+
+	return fd;
+}
+
+int xopen(const char *pathname, int flags, ...)
+{
+	mode_t mode = 0;
+	va_list ap;
+	int fd;
+
+	va_start(ap, flags);
+	if (flags & O_CREAT)
+		mode = va_arg(ap, mode_t);
+
+retry:
+	fd = open(pathname, flags, mode);
+	if (fd < 0) {
+		if (errno == EINTR)
+			goto retry;
+
+		if (errno == EMFILE && sockfd_shrink())
+			goto retry;
+	}
+
+	va_end(ap);
+	return fd;
+}
+
+int xtimerfd_create(clockid_t clock_id, int flags)
+{
+	int fd;
+
+retry:
+	fd = timerfd_create(clock_id, flags);
+	if (fd < 0) {
+		if (errno == EMFILE && sockfd_shrink())
+			goto retry;
+	}
+
+	return fd;
+}
+
+int xepoll_create(int size)
+{
+	int fd;
+
+retry:
+	fd = epoll_create(size);
+	if (fd < 0) {
+		if (errno == EMFILE && sockfd_shrink())
+			goto retry;
+	}
+
+	return fd;
+}
+

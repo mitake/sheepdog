@@ -11,6 +11,9 @@
 #include <search.h>
 #include <urcu/uatomic.h>
 #include <sys/eventfd.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <fcntl.h>
 
 #include "logger.h"
 #include "bitops.h"
@@ -285,5 +288,16 @@ static inline bool is_stdout_console(void)
 
 extern mode_t sd_def_fmode;
 extern mode_t sd_def_dmode;
+
+/*
+ * The below x- prefixed wrappers are for handling EMFILE gracefully.
+ * They reap fds of sockfd cache and retry when they face EMFILE.
+ */
+int xsocket(int domain, int type, int protocol);
+int xaccept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+int xeventfd(int initval, int flags);
+int xopen(const char *pathname, int flags, ...);
+int xtimerfd_create(clockid_t clock_id, int flags);
+int xepoll_create(int size);
 
 #endif

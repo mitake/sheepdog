@@ -28,8 +28,6 @@
 
 #define CACHE_INDEX_MASK      (CACHE_CREATE_BIT)
 
-#define CACHE_BLOCK_SIZE      ((UINT64_C(1) << 10) * 64) /* 64 KB */
-
 #define CACHE_OBJECT_SIZE (SD_DATA_OBJ_SIZE / 1024 / 1024) /* M */
 
 /* Kick background pusher if dirty_count greater than it */
@@ -49,7 +47,7 @@ struct object_cache_entry {
 	struct list_head dirty_list; /* For dirty list of object cache */
 	struct list_head lru_list; /* For lru list of object cache */
 
-	pthread_rwlock_t lock; /* Entry lock */
+	struct sd_lock lock; /* Entry lock */
 };
 
 struct object_cache {
@@ -63,7 +61,7 @@ struct object_cache {
 	int push_efd; /* Used to synchronize between pusher and push threads */
 	uatomic_bool in_push; /* Whether if pusher is running */
 
-	pthread_rwlock_t lock; /* Cache lock */
+	struct sd_lock lock; /* Cache lock */
 };
 
 struct push_work {
@@ -79,8 +77,8 @@ static int def_open_flags = O_RDWR;
 #define HASH_BITS	5
 #define HASH_SIZE	(1 << HASH_BITS)
 
-static pthread_rwlock_t hashtable_lock[HASH_SIZE] = {
-	[0 ... HASH_SIZE - 1] = PTHREAD_RWLOCK_INITIALIZER
+static struct sd_lock hashtable_lock[HASH_SIZE] = {
+	[0 ... HASH_SIZE - 1] = SD_LOCK_INITIALIZER
 };
 
 static struct hlist_head cache_hashtable[HASH_SIZE];
@@ -116,19 +114,28 @@ static inline bool idx_has_vdi_bit(uint32_t idx)
 	return !!(idx & CACHE_VDI_BIT);
 }
 
-static uint64_t calc_object_bmap(size_t len, off_t offset)
+static inline size_t get_cache_block_size(uint64_t oid)
+{
+	size_t bsize = DIV_ROUND_UP(get_objsize(oid),
+				    sizeof(uint64_t) * BITS_PER_BYTE);
+
+	return round_up(bsize, BLOCK_SIZE); /* To be FS friendly */
+}
+
+static uint64_t calc_object_bmap(uint64_t oid, size_t len, off_t offset)
 {
 	int start, end, nr;
-	unsigned long bmap = 0;
+	uint64_t bmap = 0;
+	size_t bsize = get_cache_block_size(oid);
 
-	start = offset / CACHE_BLOCK_SIZE;
-	end = DIV_ROUND_UP(len + offset, CACHE_BLOCK_SIZE);
+	start = offset / bsize;
+	end = DIV_ROUND_UP(len + offset, bsize);
 	nr = end - start;
 
 	while (nr--)
 		set_bit(start + nr, &bmap);
 
-	return (uint64_t)bmap;
+	return bmap;
 }
 
 static inline void get_cache_entry(struct object_cache_entry *entry)
@@ -160,32 +167,32 @@ static inline bool entry_in_use(struct object_cache_entry *entry)
  */
 static inline void read_lock_cache(struct object_cache *oc)
 {
-	pthread_rwlock_rdlock(&oc->lock);
+	sd_read_lock(&oc->lock);
 }
 
 static inline void write_lock_cache(struct object_cache *oc)
 {
-	pthread_rwlock_wrlock(&oc->lock);
+	sd_write_lock(&oc->lock);
 }
 
 static inline void unlock_cache(struct object_cache *oc)
 {
-	pthread_rwlock_unlock(&oc->lock);
+	sd_unlock(&oc->lock);
 }
 
 static inline void read_lock_entry(struct object_cache_entry *entry)
 {
-	pthread_rwlock_rdlock(&entry->lock);
+	sd_read_lock(&entry->lock);
 }
 
 static inline void write_lock_entry(struct object_cache_entry *entry)
 {
-	pthread_rwlock_wrlock(&entry->lock);
+	sd_write_lock(&entry->lock);
 }
 
 static inline void unlock_entry(struct object_cache_entry *entry)
 {
-	pthread_rwlock_unlock(&entry->lock);
+	sd_unlock(&entry->lock);
 }
 
 static struct object_cache_entry *
@@ -279,7 +286,8 @@ static void add_to_dirty_list(struct object_cache_entry *entry)
 	list_add_tail(&entry->dirty_list, &oc->dirty_head);
 	/* FIXME read sys->status atomically */
 	if (uatomic_add_return(&oc->dirty_count, 1) > MAX_DIRTY_OBJECT_COUNT
-	    && !uatomic_is_true(&oc->in_push) && sys->status == SD_STATUS_OK)
+	    && !uatomic_is_true(&oc->in_push)
+	    && sys->cinfo.status == SD_STATUS_OK)
 		kick_background_pusher(oc);
 }
 
@@ -292,7 +300,7 @@ free_cache_entry(struct object_cache_entry *entry)
 	list_del_init(&entry->lru_list);
 	if (!list_empty(&entry->dirty_list))
 		del_from_dirty_list(entry);
-	pthread_rwlock_destroy(&entry->lock);
+	sd_destroy_lock(&entry->lock);
 	free(entry);
 }
 
@@ -432,7 +440,7 @@ static int write_cache_object(struct object_cache_entry *entry, void *buf,
 	}
 	write_lock_cache(oc);
 	if (writeback) {
-		entry->bmap |= calc_object_bmap(count, offset);
+		entry->bmap |= calc_object_bmap(oid, count, offset);
 		if (list_empty(&entry->dirty_list))
 			add_to_dirty_list(entry);
 	}
@@ -470,32 +478,24 @@ static int push_cache_object(uint32_t vid, uint32_t idx, uint64_t bmap,
 	struct sd_req hdr;
 	void *buf;
 	off_t offset;
-	unsigned data_length;
-	int ret = SD_RES_NO_MEM;
 	uint64_t oid = idx_to_oid(vid, idx);
+	size_t data_length, bsize = get_cache_block_size(oid);
+	int ret = SD_RES_NO_MEM;
 	int first_bit, last_bit;
 
-	sd_dprintf("%"PRIx64", create %d", oid, create);
-
 	if (!bmap) {
-		sd_dprintf("WARN: nothing to flush");
+		sd_dprintf("WARN: nothing to flush %"PRIx64, oid);
 		return SD_RES_SUCCESS;
 	}
 
 	first_bit = ffsll(bmap) - 1;
 	last_bit = fls64(bmap) - 1;
 
-	sd_dprintf("bmap:0x%"PRIx64", first_bit:%d, last_bit:%d", bmap,
-		   first_bit, last_bit);
-	offset = first_bit * CACHE_BLOCK_SIZE;
-	data_length = (last_bit - first_bit + 1) * CACHE_BLOCK_SIZE;
-
-	/*
-	 * CACHE_BLOCK_SIZE may not be divisible by SD_INODE_SIZE,
-	 * so (offset + data_length) could larger than SD_INODE_SIZE
-	 */
-	if (is_vdi_obj(oid) && (offset + data_length) > SD_INODE_SIZE)
-		data_length = SD_INODE_SIZE - offset;
+	sd_dprintf("%"PRIx64" bmap(%zd):0x%"PRIx64", first_bit:%d, last_bit:%d",
+		   oid, bsize, bmap, first_bit, last_bit);
+	offset = first_bit * bsize;
+	data_length = min((last_bit - first_bit + 1) * bsize,
+			  get_objsize(oid) - offset);
 
 	buf = xvalloc(data_length);
 	ret = read_cache_object_noupdate(vid, idx, buf, data_length, offset);
@@ -589,19 +589,19 @@ static void do_reclaim(struct work *work)
 		int idx = (i + j) % HASH_SIZE;
 		struct hlist_head *head = cache_hashtable + idx;
 
-		pthread_rwlock_rdlock(&hashtable_lock[idx]);
+		sd_read_lock(&hashtable_lock[idx]);
 		hlist_for_each_entry(cache, node, head, hash) {
 			uint32_t cap;
 
 			do_reclaim_object(cache);
 			cap = uatomic_read(&gcache.capacity);
 			if (cap <= HIGH_WATERMARK) {
-				pthread_rwlock_unlock(&hashtable_lock[idx]);
+				sd_unlock(&hashtable_lock[idx]);
 				sd_dprintf("complete, capacity %"PRIu32, cap);
 				return;
 			}
 		}
-		pthread_rwlock_unlock(&hashtable_lock[idx]);
+		sd_unlock(&hashtable_lock[idx]);
 	}
 	sd_dprintf("finished");
 }
@@ -634,9 +634,9 @@ static struct object_cache *find_object_cache(uint32_t vid, bool create)
 	struct hlist_node *node;
 
 	if (create)
-		pthread_rwlock_wrlock(&hashtable_lock[h]);
+		sd_write_lock(&hashtable_lock[h]);
 	else
-		pthread_rwlock_rdlock(&hashtable_lock[h]);
+		sd_read_lock(&hashtable_lock[h]);
 
 	if (hlist_empty(head))
 		goto not_found;
@@ -656,13 +656,13 @@ not_found:
 		INIT_LIST_HEAD(&cache->dirty_head);
 		INIT_LIST_HEAD(&cache->lru_head);
 
-		pthread_rwlock_init(&cache->lock, NULL);
+		sd_init_lock(&cache->lock);
 		hlist_add_head(&cache->hash, head);
 	} else {
 		cache = NULL;
 	}
 out:
-	pthread_rwlock_unlock(&hashtable_lock[h]);
+	sd_unlock(&hashtable_lock[h]);
 	return cache;
 }
 
@@ -695,7 +695,7 @@ alloc_cache_entry(struct object_cache *oc, uint32_t idx)
 	entry = xzalloc(sizeof(*entry));
 	entry->oc = oc;
 	entry->idx = idx;
-	pthread_rwlock_init(&entry->lock, NULL);
+	sd_init_lock(&entry->lock);
 	INIT_LIST_HEAD(&entry->dirty_list);
 	INIT_LIST_HEAD(&entry->lru_list);
 
@@ -977,9 +977,9 @@ void object_cache_delete(uint32_t vid)
 		return;
 
 	/* Firstly we free memeory */
-	pthread_rwlock_wrlock(&hashtable_lock[h]);
+	sd_write_lock(&hashtable_lock[h]);
 	hlist_del(&cache->hash);
-	pthread_rwlock_unlock(&hashtable_lock[h]);
+	sd_unlock(&hashtable_lock[h]);
 
 	write_lock_cache(cache);
 	list_for_each_entry_safe(entry, t, &cache->lru_head, lru_list) {
@@ -987,7 +987,7 @@ void object_cache_delete(uint32_t vid)
 		uatomic_sub(&gcache.capacity, CACHE_OBJECT_SIZE);
 	}
 	unlock_cache(cache);
-	pthread_rwlock_destroy(&cache->lock);
+	sd_destroy_lock(&cache->lock);
 	close(cache->push_efd);
 	free(cache);
 

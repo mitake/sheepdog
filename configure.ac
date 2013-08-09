@@ -18,7 +18,7 @@
 # bootstrap / init
 AC_PREREQ([2.61])
 
-m4_define([sheepdog_version], [0.6.0])
+m4_define([sheepdog_version], [0.6.90])
 
 m4_define([git_version],
 	m4_esyscmd([git describe --tags --dirty 2> /dev/null | sed 's/^v//' \
@@ -323,7 +323,6 @@ WARNLIST="
 	strict-prototypes
 	pointer-arith
 	write-strings
-	cast-align
 	bad-function-cast
 	missing-format-attribute
 	format=2
@@ -334,6 +333,14 @@ WARNLIST="
 	gnu89-inline
 	no-strict-aliasing
 	"
+
+case "${host}" in
+	arm*)
+	;;
+	*)
+	WARNLIST="${WARNLIST} cast-align"
+	;;
+esac
 
 for j in $WARNLIST; do
 	if cc_supports_flag -W$j; then

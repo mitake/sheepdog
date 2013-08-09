@@ -21,7 +21,7 @@
 static char farm_object_dir[PATH_MAX];
 static char farm_dir[PATH_MAX];
 
-static pthread_rwlock_t vdi_list_lock = PTHREAD_RWLOCK_INITIALIZER;
+static struct sd_lock vdi_list_lock = SD_LOCK_INITIALIZER;
 struct vdi_entry {
 	char name[SD_MAX_VDI_LEN];
 	uint64_t vdi_size;
@@ -255,7 +255,7 @@ static void save_object_done(struct work *work)
 {
 	struct snapshot_work *sw = container_of(work, struct snapshot_work,
 						work);
-	static uint64_t saved;
+	static unsigned long saved;
 
 	if (uatomic_is_true(&work_error))
 		goto out;
@@ -329,7 +329,7 @@ static void do_load_object(struct work *work)
 	void *buffer = NULL;
 	size_t size;
 	struct snapshot_work *sw;
-	static uint64_t loaded;
+	static unsigned long loaded;
 
 	if (uatomic_is_true(&work_error))
 		return;
@@ -350,9 +350,9 @@ static void do_load_object(struct work *work)
 				   sw->entry.nr_copies) < 0)
 			goto error;
 
-		pthread_rwlock_wrlock(&vdi_list_lock);
+		sd_write_lock(&vdi_list_lock);
 		insert_vdi(buffer);
-		pthread_rwlock_unlock(&vdi_list_lock);
+		sd_unlock(&vdi_list_lock);
 	}
 
 	farm_show_progress(uatomic_add_return(&loaded, 1), trunk_get_count());

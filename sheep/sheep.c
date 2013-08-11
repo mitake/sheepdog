@@ -119,6 +119,8 @@ static struct sd_option sheep_options[] = {
 	 "(default: 7000)"},
 	{'P', "pidfile", true, "create a pid file"},
 	{'r', "http", true, "enable http service", http_help},
+	{'s', "syslog", false, "log to standard syslog instead of a dedicated "
+	 "file (sheep.log)"},
 	{'u', "upgrade", false, "upgrade to the latest data layout"},
 	{'v', "version", false, "show the version"},
 	{'w', "cache", true, "enable object cache", cache_help},
@@ -577,12 +579,13 @@ int main(int argc, char **argv)
 	const char *dirp = DEFAULT_OBJECT_DIR, *short_options;
 	char *dir, *p, *pid_file = NULL, *bindaddr = NULL, path[PATH_MAX],
 	     *argp = NULL;
-	bool is_daemon = true, to_stdout = false, explicit_addr = false;
+	bool is_daemon = true, explicit_addr = false;
 	int64_t zone = -1;
 	struct cluster_driver *cdrv;
 	struct option *long_options;
 	const char *log_format = "server", *http_address = NULL;
 	static struct logger_user_info sheep_info;
+	enum log_out_dest log_dest = TO_FILE;
 
 	install_crash_handler(crash_handler);
 	signal(SIGPIPE, SIG_IGN);
@@ -640,7 +643,7 @@ int main(int argc, char **argv)
 			nr_vnodes = 0;
 			break;
 		case 'o':
-			to_stdout = true;
+			log_dest = TO_STDOUT;
 			break;
 		case 'z':
 			zone = strtol(optarg, &p, 10);
@@ -711,6 +714,9 @@ int main(int argc, char **argv)
 		case 'F':
 			log_format = optarg;
 			break;
+		case 's':
+			log_dest = TO_SYSLOG;
+			break;
 		default:
 			usage(1);
 			break;
@@ -722,6 +728,9 @@ int main(int argc, char **argv)
 	 * sd_printf() series
 	 */
 	sheep_info.port = port;
+	if (log_dest == TO_SYSLOG)
+		/* enforce the formatter for standard syslog */
+		log_format = "syslog";
 	early_log_init(log_format, &sheep_info);
 
 	if (nr_vnodes == 0) {
@@ -751,7 +760,7 @@ int main(int argc, char **argv)
 	if (lock_and_daemon(is_daemon, dir))
 		exit(1);
 
-	ret = log_init(program_name, to_stdout, log_level, path);
+	ret = log_init(program_name, log_dest, log_level, path);
 	if (ret)
 		exit(1);
 

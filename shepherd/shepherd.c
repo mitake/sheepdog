@@ -611,6 +611,8 @@ static struct sd_option shepherd_options[] = {
 	{ 'l', "log-file", true,
 	  "specify a log file for writing logs of shepherd" },
 	{ 'p', "port", true, "specify TCP port on which to listen" },
+	{ 's', "syslog", false, "log to standard syslog instead of a dedicated "
+	  "file (/var/log/shepherd.log)" },
 	{ 0, NULL, false, NULL },
 };
 
@@ -662,6 +664,7 @@ int main(int argc, char **argv)
 	const char *log_file = "/var/log/shepherd.log";
 	const char *log_format = "server";
 	struct logger_user_info shepherd_info;
+	enum log_out_dest log_dest = TO_FILE;
 
 	int port = SHEPHERD_PORT;
 	const char *bindaddr = NULL;
@@ -690,6 +693,7 @@ int main(int argc, char **argv)
 			break;
 		case 'f':
 			daemonize = false;
+			log_dest = TO_STDOUT;
 			break;
 		case 'F':
 			log_format = optarg;
@@ -707,6 +711,9 @@ int main(int argc, char **argv)
 				sd_err("invalid port: %s", optarg);
 				exit(1);
 			}
+			break;
+		case 's':
+			log_dest = TO_SYSLOG;
 			break;
 		default:
 			sd_err("unknown option: %c", ch);
@@ -730,9 +737,11 @@ int main(int argc, char **argv)
 	 * sd_printf() series
 	 */
 	shepherd_info.port = port;
+	if (log_dest == TO_SYSLOG)
+		log_format = "syslog";
 	early_log_init(log_format, &shepherd_info);
 
-	ret = log_init(progname, !daemonize, log_level, (char *)log_file);
+	ret = log_init(progname, log_dest, log_level, (char *)log_file);
 	if (ret)
 		panic("initialize logger failed: %m");
 

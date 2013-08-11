@@ -251,6 +251,32 @@ static int server_log_formatter(char *buff, size_t size,
 }
 log_format_register("server", server_log_formatter);
 
+static int syslog_log_formatter(char *buff, size_t size,
+				const struct logmsg *msg)
+{
+	char *p = buff;
+	int worker_name_len = strlen(msg->worker_name);
+
+	if (worker_name_len && msg->worker_idx)
+		snprintf(p, size - strlen(buff), "[%s %d] ", msg->worker_name,
+			 msg->worker_idx);
+	else if (worker_name_len)
+		snprintf(p, size - strlen(buff), "[%s] ", msg->worker_name);
+	else
+		pstrcpy(p, size - strlen(buff), "[main] ");
+
+	p += strlen(p);
+
+	snprintf(p, size - strlen(buff), "%s(%d) ", msg->func, msg->line);
+	p += strlen(p);
+
+	snprintf(p, size - strlen(buff), "%s", (char *)msg->str);
+	p += strlen(p);
+
+	return p - buff;
+}
+log_format_register("syslog", syslog_log_formatter);
+
 static int default_log_formatter(char *buff, size_t size,
 					 const struct logmsg *msg)
 {
@@ -514,17 +540,20 @@ static void crash_handler(int signo)
 	reraise_crash_signal(signo, 1);
 }
 
-static void logger(char *log_dir, char *outfile)
+static void logger(char *log_dir, bool use_syslog, char *outfile)
 {
 	int fd;
 
 	log_buff = xzalloc(la->end - la->start);
 
-	log_fd = open(outfile, O_CREAT | O_RDWR | O_APPEND, 0644);
-	if (log_fd < 0) {
-		syslog(LOG_ERR, "failed to open %s\n", outfile);
-		exit(1);
+	if (!use_syslog) {
+		log_fd = open(outfile, O_CREAT | O_RDWR | O_APPEND, 0644);
+		if (log_fd < 0) {
+			syslog(LOG_ERR, "failed to open %s\n", outfile);
+			exit(1);
+		}
 	}
+
 	la->active = true;
 
 	fd = open("/dev/null", O_RDWR);
@@ -558,7 +587,7 @@ static void logger(char *log_dir, char *outfile)
 	while (la->active) {
 		log_flush();
 
-		if (max_logsize) {
+		if (max_logsize && 0 <= log_fd) {
 			off_t offset;
 
 			pthread_mutex_lock(&logsize_lock);
@@ -604,8 +633,8 @@ void early_log_init(const char *format_name, struct logger_user_info *user_info)
 	exit(1);
 }
 
-int log_init(const char *program_name, bool to_stdout, int level,
-		     char *outfile)
+int log_init(const char *program_name, enum log_out_dest dest, int level,
+	     char *outfile)
 {
 	char log_dir[PATH_MAX], tmp[PATH_MAX];
 	int size = level == SDOG_DEBUG ? LOG_SPACE_DEBUG_SIZE : LOG_SPACE_SIZE;
@@ -619,7 +648,7 @@ int log_init(const char *program_name, bool to_stdout, int level,
 
 	semkey = random();
 
-	if (to_stdout) {
+	if (dest == TO_STDOUT) {
 		if (is_stdout_console())
 			colorize = true;
 	} else {
@@ -644,7 +673,7 @@ int log_init(const char *program_name, bool to_stdout, int level,
 		if (logger_pid)
 			syslog(LOG_WARNING, "logger pid %d starting\n", logger_pid);
 		else
-			logger(log_dir, outfile);
+			logger(log_dir, dest != TO_FILE, outfile);
 	}
 
 	return 0;

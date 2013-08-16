@@ -35,6 +35,9 @@
 #include "util.h"
 #include "sheep.h"
 
+#define TRACEPOINT_DEFINE
+#include "sockfd_cache_tp.h"
+
 struct sockfd_cache {
 	struct rb_root root;
 	struct sd_lock lock;
@@ -232,6 +235,8 @@ static void sockfd_cache_add_nolock(const struct node_id *nid)
 		return;
 	}
 	sockfd_cache.count++;
+
+	tracepoint(sockfd_cache, new_sockfd_entry, new, fds_count);
 }
 
 /* Add group of nodes to the cache */
@@ -269,6 +274,7 @@ void sockfd_cache_add(const struct node_id *nid)
 	sd_unlock(&sockfd_cache.lock);
 	n = uatomic_add_return(&sockfd_cache.count, 1);
 	sd_debug("%s, count %d", addr_to_str(nid->addr, nid->port), n);
+	tracepoint(sockfd_cache, new_sockfd_entry, new, fds_count);
 }
 
 static uatomic_bool fds_in_grow;
@@ -299,6 +305,8 @@ static void do_grow_fds(struct work *work)
 	fds_count *= 2;
 	fds_high_watermark = FDS_WATERMARK(fds_count);
 	sd_unlock(&sockfd_cache.lock);
+
+	tracepoint(sockfd_cache, grow_fd_count, new_fds_count);
 }
 
 static void grow_fds_done(struct work *work)
@@ -462,8 +470,10 @@ struct sockfd *sockfd_cache_get(const struct node_id *nid)
 	int fd;
 
 	sfd = sockfd_cache_get_long(nid);
-	if (sfd)
+	if (sfd) {
+		tracepoint(sockfd_cache, cache_get, 1);
 		return sfd;
+	}
 
 	/* Fallback on a non-io connection that is to be closed shortly */
 	fd = connect_to_addr(nid->addr, nid->port);
@@ -474,6 +484,9 @@ struct sockfd *sockfd_cache_get(const struct node_id *nid)
 	sfd->idx = -1;
 	sfd->fd = fd;
 	sd_debug("%d", fd);
+
+	tracepoint(sockfd_cache, cache_get, 0);
+
 	return sfd;
 }
 
@@ -490,11 +503,15 @@ void sockfd_cache_put(const struct node_id *nid, struct sockfd *sfd)
 		sd_debug("%d", sfd->fd);
 		close(sfd->fd);
 		free(sfd);
+
+		tracepoint(sockfd_cache, cache_put, 0);
 		return;
 	}
 
 	sockfd_cache_put_long(nid, sfd->idx);
 	free(sfd);
+
+	tracepoint(sockfd_cache, cache_put, 1);
 }
 
 /* Delete all sockfd connected to the node, when node is crashed. */

@@ -34,6 +34,9 @@
 #include "work.h"
 #include "event.h"
 
+#define TRACEPOINT_DEFINE
+#include "work_tp.h"
+
 #define TID_MAX_DEFAULT 0x8000 /* default maximum tid for most systems */
 
 static size_t tid_max;
@@ -202,12 +205,15 @@ void queue_work(struct work_queue *q, struct work *work)
 {
 	struct worker_info *wi = container_of(q, struct worker_info, q);
 
+	tracepoint(work, queue_work, wi, work);
+
 	uatomic_inc(&wi->nr_workers);
 	pthread_mutex_lock(&wi->pending_lock);
 
-	if (wq_need_grow(wi))
+	if (wq_need_grow(wi)) {
 		/* double the thread pool size */
 		create_worker_threads(wi, wi->nr_threads * 2);
+	}
 
 	list_add_tail(&work->w_list, &wi->q.pending_list);
 	pthread_mutex_unlock(&wi->pending_lock);
@@ -235,6 +241,7 @@ static void worker_thread_request_done(int fd, int events, void *data)
 			work = list_first_entry(&list, struct work, w_list);
 			list_del(&work->w_list);
 
+			tracepoint(work, request_done, wi, work);
 			work->done(work);
 			uatomic_dec(&wi->nr_workers);
 		}
@@ -276,6 +283,7 @@ static void *worker_routine(void *arg)
 			pthread_detach(pthread_self());
 			sd_debug("destroy thread %s %d, %zu", wi->name, tid,
 				 wi->nr_threads);
+			tracepoint(work, exit_for_shrink, wi);
 			break;
 		}
 retest:
@@ -290,6 +298,7 @@ retest:
 		list_del(&work->w_list);
 		pthread_mutex_unlock(&wi->pending_lock);
 
+		tracepoint(work, do_work, wi, work);
 		if (work->fn)
 			work->fn(work);
 
@@ -385,6 +394,7 @@ struct work_queue *create_work_queue(const char *name,
 
 	list_add(&wi->worker_info_siblings, &worker_info_list);
 
+	tracepoint(work, create_queue, wi->name, wi, tc);
 	return &wi->q;
 destroy_threads:
 	pthread_mutex_unlock(&wi->startup_lock);

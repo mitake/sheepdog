@@ -112,59 +112,130 @@ int sd_write_object(uint64_t oid, uint64_t cow_oid, void *data,
 
 #define FOR_EACH_VDI(nr, vdis) FOR_EACH_BIT(nr, vdis, SD_NR_VDIS)
 
+struct parse_vdi_info {
+	uint64_t oid;
+	size_t size;
+	void *data;
+	vdi_parser_func_t func;
+
+	bool succeed;
+
+	struct work work;
+	struct sd_inode inode;
+};
+
+static void parse_vdi_work(struct work *work)
+{
+	int ret;
+	struct parse_vdi_info *info = container_of(work, struct parse_vdi_info,
+						work);
+	struct sd_inode inode;
+
+	info->succeed = false;
+
+	memset(&inode, 0, sizeof(inode));
+	ret = sd_read_object(info->oid, &inode, SD_INODE_HEADER_SIZE, 0, true);
+	if (ret != SD_RES_SUCCESS) {
+		sd_err("Failed to read inode header, oid: %"PRIx64"\n",
+		       info->oid);
+		return;
+	}
+
+	memcpy(&info->inode, &inode, sizeof(inode));
+
+	if (SD_INODE_HEADER_SIZE < info->size) {
+		unsigned int rlen =
+			DIV_ROUND_UP(inode.vdi_size, SD_DATA_OBJ_SIZE)
+				* sizeof(inode.data_vdi_id[0]);
+		size_t size = info->size;
+
+		if (size - SD_INODE_HEADER_SIZE < rlen)
+			rlen = size - SD_INODE_HEADER_SIZE;
+
+		ret = sd_read_object(info->oid,
+				     ((char *)&inode) + SD_INODE_HEADER_SIZE,
+				     rlen, SD_INODE_HEADER_SIZE, true);
+
+		if (ret != SD_RES_SUCCESS) {
+			sd_err("Failed to read inode, oid of the inode is:"
+			       " %"PRIx64"\n", info->oid);
+			return;
+		}
+
+		memcpy(((char *)&info->inode) + SD_INODE_HEADER_SIZE,
+			((char *)&inode) + SD_INODE_HEADER_SIZE, rlen);
+	}
+
+	info->succeed = true;
+}
+
+static void parse_vdi_main(struct work *work)
+{
+	struct parse_vdi_info *info = container_of(work, struct parse_vdi_info,
+						work);
+	struct sd_inode *inode;
+	uint32_t snapid;
+
+	if (!info->succeed)
+		goto out;
+
+	inode = &info->inode;
+	if (inode->name[0] == '\0') /* this VDI has been deleted */
+		return;
+
+	snapid = vdi_is_snapshot(inode) ? inode->snap_id : 0;
+	info->func(inode->vdi_id, inode->name, inode->tag, snapid, 0, inode,
+		   info->data);
+
+out:
+	free(info);
+}
+
+static struct work_queue *parse_vdi_wq;
+
 int parse_vdi(vdi_parser_func_t func, size_t size, void *data)
 {
 	int ret;
-	unsigned long nr;
-	static struct sd_inode i;
 	struct sd_req req;
 	static DECLARE_BITMAP(vdi_inuse, SD_NR_VDIS);
-	unsigned int rlen = sizeof(vdi_inuse);
+	unsigned long nr;
+
+	parse_vdi_wq = create_work_queue("parse vdi", WQ_DYNAMIC);
+	if (!parse_vdi_wq) {
+		sd_err("creating work queue for parsing VDIs failed: %m\n");
+		return -1;
+	}
 
 	sd_init_req(&req, SD_OP_READ_VDIS);
 	req.data_length = sizeof(vdi_inuse);
 
 	ret = dog_exec_req(sdhost, sdport, &req, &vdi_inuse);
-	if (ret < 0)
-		goto out;
-
-	FOR_EACH_VDI(nr, vdi_inuse) {
-		uint64_t oid;
-		uint32_t snapid;
-
-		oid = vid_to_vdi_oid(nr);
-
-		memset(&i, 0, sizeof(i));
-		ret = sd_read_object(oid, &i, SD_INODE_HEADER_SIZE, 0, true);
-		if (ret != SD_RES_SUCCESS) {
-			sd_err("Failed to read inode header");
-			continue;
-		}
-
-		if (i.name[0] == '\0') /* this VDI has been deleted */
-			continue;
-
-		if (size > SD_INODE_HEADER_SIZE) {
-			rlen = DIV_ROUND_UP(i.vdi_size, SD_DATA_OBJ_SIZE) *
-				sizeof(i.data_vdi_id[0]);
-			if (rlen > size - SD_INODE_HEADER_SIZE)
-				rlen = size - SD_INODE_HEADER_SIZE;
-
-			ret = sd_read_object(oid, ((char *)&i) + SD_INODE_HEADER_SIZE,
-					     rlen, SD_INODE_HEADER_SIZE, true);
-
-			if (ret != SD_RES_SUCCESS) {
-				sd_err("Failed to read inode");
-				continue;
-			}
-		}
-
-		snapid = vdi_is_snapshot(&i) ? i.snap_id : 0;
-		func(i.vdi_id, i.name, i.tag, snapid, 0, &i, data);
+	if (ret < 0) {
+		sd_err("requesting VDI bitmap failed: %m\n");
+		return -1;
 	}
 
-out:
-	return ret;
+	FOR_EACH_VDI(nr, vdi_inuse) {
+		struct parse_vdi_info *info;
+		info = xzalloc(sizeof(*info));
+
+		info->oid = vid_to_vdi_oid(nr);
+		info->size = size;
+		info->func = func;
+		info->data = data;
+
+		info->work.fn = parse_vdi_work;
+		info->work.done = parse_vdi_main;
+
+		queue_work(parse_vdi_wq, &info->work);
+
+		/* reap results if there are ready ones */
+		event_loop(0);
+	}
+
+	work_queue_wait(parse_vdi_wq);
+
+	return 0;
 }
 
 int dog_exec_req(const uint8_t *addr, int port, struct sd_req *hdr,

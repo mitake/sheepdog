@@ -15,22 +15,23 @@
 
 #include "sheepdog_proto.h"
 #include "sheep.h"
-#include "collie.h"
+#include "dog.h"
 #include "util.h"
 #include "sockfd_cache.h"
 
 #define EPOLL_SIZE 4096
 
-static const char program_name[] = "collie";
-const char *sdhost = "127.0.0.1";
+static const char program_name[] = "dog";
+/* default sdhost is "127.0.0.1" */
+uint8_t sdhost[16] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 127, 0, 0, 1 };
 int sdport = SD_LISTEN_PORT;
 bool highlight = true;
 bool raw_output;
 bool verbose;
 
-static const struct sd_option collie_options[] = {
+static const struct sd_option dog_options[] = {
 
-	/* common options for all collie commands */
+	/* common options for all dog commands */
 	{'a', "address", true, "specify the daemon address (default: localhost)"},
 	{'p', "port", true, "specify the daemon port"},
 	{'r', "raw", false, "raw output mode: omit headers, separate fields with\n"
@@ -48,7 +49,6 @@ uint32_t sd_epoch;
 struct sd_node sd_nodes[SD_MAX_NODES];
 struct sd_vnode sd_vnodes[SD_MAX_VNODES];
 int sd_nodes_nr, sd_vnodes_nr;
-unsigned master_idx;
 
 int update_node_list(int max_nodes)
 {
@@ -65,13 +65,13 @@ int update_node_list(int max_nodes)
 
 	hdr.data_length = size;
 
-	ret = collie_exec_req(sdhost, sdport, &hdr, buf);
+	ret = dog_exec_req(sdhost, sdport, &hdr, buf);
 	if (ret < 0)
 		goto out;
 
 	if (rsp->result != SD_RES_SUCCESS) {
-		fprintf(stderr, "Failed to update node list: %s\n",
-				sd_strerror(rsp->result));
+		sd_err("Failed to update node list: %s",
+		       sd_strerror(rsp->result));
 		ret = -1;
 		goto out;
 	}
@@ -79,7 +79,7 @@ int update_node_list(int max_nodes)
 	size = rsp->data_length;
 	sd_nodes_nr = size / sizeof(*ent);
 	if (sd_nodes_nr == 0) {
-		fprintf(stderr, "There are no active sheep daemons\n");
+		sd_err("There are no active sheep daemons");
 		exit(EXIT_FAILURE);
 	}
 
@@ -92,7 +92,6 @@ int update_node_list(int max_nodes)
 	memcpy(sd_nodes, buf, size);
 	sd_vnodes_nr = nodes_to_vnodes(sd_nodes, sd_nodes_nr, sd_vnodes);
 	sd_epoch = hdr.epoch;
-	master_idx = rsp->node.master_idx;
 out:
 	if (buf)
 		free(buf);
@@ -112,7 +111,7 @@ static const struct sd_option *find_opt(int ch)
 	const struct sd_option *opt;
 
 	/* search for common options */
-	sd_for_each_option(opt, collie_options) {
+	sd_for_each_option(opt, dog_options) {
 		if (opt->ch == ch)
 			return opt;
 	}
@@ -125,7 +124,7 @@ static const struct sd_option *find_opt(int ch)
 		}
 	}
 
-	fprintf(stderr, "Internal error\n");
+	sd_err("Internal error");
 	exit(EXIT_SYSFAIL);
 }
 
@@ -136,7 +135,7 @@ static void init_commands(const struct command **commands)
 		vdi_command,
 		node_command,
 		cluster_command,
-		debug_command,
+		trace_command,
 		{NULL,}
 	};
 
@@ -190,7 +189,7 @@ static unsigned long setup_commands(const struct command *commands,
 	if (!found) {
 		if (cmd && strcmp(cmd, "help") && strcmp(cmd, "--help") &&
 		    strcmp(cmd, "-h")) {
-			fprintf(stderr, "Invalid command '%s'\n", cmd);
+			sd_err("Invalid command '%s'", cmd);
 			usage(commands, EXIT_USAGE);
 		}
 		usage(commands, 0);
@@ -211,10 +210,10 @@ static unsigned long setup_commands(const struct command *commands,
 	if (!command_fn) {
 		if (subcmd && strcmp(subcmd, "help") &&
 		    strcmp(subcmd, "--help") && strcmp(subcmd, "-h"))
-			fprintf(stderr, "Invalid command '%s %s'\n", cmd, subcmd);
-		fprintf(stderr, "Available %s commands:\n", cmd);
+			sd_err("Invalid command '%s %s'", cmd, subcmd);
+		sd_err("Available %s commands:", cmd);
 		for (s = commands[i].sub; s->name; s++)
-			fprintf(stderr, "  %s %s\n", cmd, s->name);
+			sd_err("  %s %s", cmd, s->name);
 		exit(EXIT_USAGE);
 	}
 
@@ -228,7 +227,7 @@ static void usage(const struct command *commands, int status)
 	char name[64];
 
 	if (status)
-		fprintf(stderr, "Try '%s --help' for more information.\n", program_name);
+		sd_err("Try '%s --help' for more information.", program_name);
 	else {
 		printf("Sheepdog administrator utility\n");
 		printf("Usage: %s <command> <subcommand> [options]\n", program_name);
@@ -317,13 +316,13 @@ static const struct sd_option *build_sd_options(const char *opts)
 
 static void crash_handler(int signo)
 {
-	fprintf(stderr, "collie exits unexpectedly (%s).\n", strsignal(signo));
+	sd_err("dog exits unexpectedly (%s).", strsignal(signo));
 
 	sd_backtrace();
 
 	/*
 	 * OOM raises SIGABRT in xmalloc but the administrator expects
-	 * that collie exits with EXIT_SYSFAIL.  We have to give up
+	 * that dog exits with EXIT_SYSFAIL.  We have to give up
 	 * dumping a core file in this case.
 	 */
 	if (signo == SIGABRT)
@@ -367,12 +366,15 @@ int main(int argc, char **argv)
 
 		switch (ch) {
 		case 'a':
-			sdhost = optarg;
+			if (!str_to_addr(optarg, sdhost)) {
+				sd_err("Invalid ip address %s", optarg);
+				return EXIT_FAILURE;
+			}
 			break;
 		case 'p':
 			sdport = strtol(optarg, &p, 10);
 			if (optarg == p || sdport < 1 || sdport > UINT16_MAX) {
-				fprintf(stderr, "Invalid port number '%s'\n", optarg);
+				sd_err("Invalid port number '%s'", optarg);
 				exit(EXIT_USAGE);
 			}
 			break;
@@ -400,27 +402,27 @@ int main(int argc, char **argv)
 	if (!is_stdout_console() || raw_output)
 		highlight = false;
 
-	if (flags & SUBCMD_FLAG_NEED_NODELIST) {
+	if (flags & CMD_NEED_NODELIST) {
 		ret = update_node_list(SD_MAX_NODES);
 		if (ret < 0) {
-			fprintf(stderr, "Failed to get node list\n");
+			sd_err("Failed to get node list");
 			exit(EXIT_SYSFAIL);
 		}
 	}
 
-	if (flags & SUBCMD_FLAG_NEED_ARG && argc == optind)
+	if (flags & CMD_NEED_ARG && argc == optind)
 		subcommand_usage(argv[1], argv[2], EXIT_USAGE);
 
 	if (init_event(EPOLL_SIZE) < 0)
 		exit(EXIT_SYSFAIL);
 
-	if (init_work_queue(get_nr_nodes, NULL, NULL) != 0) {
-		fprintf(stderr, "Failed to init work queue\n");
+	if (init_work_queue(get_nr_nodes) != 0) {
+		sd_err("Failed to init work queue");
 		exit(EXIT_SYSFAIL);
 	}
 
 	if (sockfd_init()) {
-		fprintf(stderr, "sockfd_init() failed\n");
+		sd_err("sockfd_init() failed");
 		exit(EXIT_SYSFAIL);
 	}
 

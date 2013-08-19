@@ -2,18 +2,7 @@
 
 # Test membership, add one node after killing existing one node
 
-seq=`basename $0`
-echo "QA output created by $seq"
-
-here=`pwd`
-tmp=/tmp/$$
-status=1        # failure is the default!
-
-# get standard environment, filters and checks
-. ./common.rc
-. ./common.filter
-
-_cleanup
+. ./common
 
 for i in 0 1; do
     _start_sheep $i
@@ -49,5 +38,5 @@ done
 _wait_for_sheep 5
 echo check whether all nodes have the same cluster info
 for i in 0 1 2 3 4; do
-    $COLLIE cluster info -p 700$i | _filter_cluster_info
+    $DOG cluster info -p 700$i | _filter_cluster_info
 done

@@ -18,7 +18,7 @@
 # bootstrap / init
 AC_PREREQ([2.61])
 
-m4_define([sheepdog_version], [0.6.90])
+m4_define([sheepdog_version], [0.7.50])
 
 m4_define([git_version],
 	m4_esyscmd([git describe --tags --dirty 2> /dev/null | sed 's/^v//' \
@@ -28,7 +28,7 @@ AC_INIT([sheepdog], m4_default(git_version, sheepdog_version),
 	[sheepdog@lists.wpkg.org])
 AM_INIT_AUTOMAKE([-Wno-portability])
 
-AC_CONFIG_SRCDIR([collie/collie.c])
+AC_CONFIG_SRCDIR([dog/dog.c])
 AC_CONFIG_HEADER([include/config.h])
 
 AC_CANONICAL_HOST
@@ -127,7 +127,7 @@ AC_CHECK_FUNCS([alarm alphasort atexit bzero dup2 endgrent endpwent fcntl \
 		strerror strrchr strspn strstr])
 
 AC_CONFIG_FILES([Makefile
-		collie/Makefile
+		dog/Makefile
 		sheep/Makefile
 		sheepfs/Makefile
 		include/Makefile
@@ -137,7 +137,7 @@ AC_CONFIG_FILES([Makefile
 		shepherd/Makefile
 		tests/unit/Makefile
 		tests/unit/mock/Makefile
-		tests/unit/collie/Makefile
+		tests/unit/dog/Makefile
 		tests/unit/sheep/Makefile
 		tools/Makefile])
 
@@ -210,7 +210,7 @@ AC_ARG_WITH([initddir],
 
 AC_ARG_ENABLE([trace],
 	[  --enable-trace           : enable trace],,
-	[ enable_trace="no" ],)
+	[ enable_trace="${enable_debug}" ],)
 AM_CONDITIONAL(BUILD_TRACE, test x$enable_trace = xyes)
 
 PKG_CHECK_MODULES([fuse],[fuse], HAVE_FUSE="yes", HAVE_FUSE="no")
@@ -282,13 +282,16 @@ if test "x${enable_zookeeper}" = xyes; then
 fi
 
 if test "x${enable_trace}" = xyes; then
-	if test "x${enable_debug}" = xyes || \
-	   test "x${enable_coverage}" = xyes; then
-		AC_MSG_ERROR(tracer cannot be used with debug options)
+	if test "x${enable_coverage}" = xyes; then
+		AC_MSG_ERROR(tracer cannot be used with coverage options)
 	fi
 	if [[[ $host != *x86_64* ]]]; then
 		AC_MSG_ERROR(tracer can be used on x86_64 architectures)
 	fi
+	AC_CHECK_LIB([bfd], [bfd_openr],,
+		AC_MSG_ERROR(requires binutils-dev))
+	AC_CHECK_HEADERS([bfd.h],,
+		AC_MSG_ERROR(requires binutils-dev))
 	AC_CHECK_LIB([rt], [clock_gettime],,
 		AC_MSG_ERROR(librt not found))
 	AC_DEFINE_UNQUOTED([HAVE_TRACE], 1, [have trace])
@@ -378,12 +381,9 @@ else
 fi
 
 if test "x${enable_trace}" = xyes && \
-		cc_supports_flag -pg && \
-		cc_supports_flag -gstabs ; then
-	AC_MSG_NOTICE([Enabling trace (-pg -gstabs)])
-	TRACE_CFLAGS="-pg -gstabs"
-	TRACE_LDFLAGS="-T$(pwd)/sheep/trace/trace.ld"
-	PACKAGE_FEATURES="$PACKAGE_FEATURES trace"
+		cc_supports_flag -pg ; then
+	AC_MSG_NOTICE([Enabling trace (-pg)])
+	TRACE_CFLAGS="-pg"
 else
 	TRACE_CFLAGS=""
 fi
@@ -393,7 +393,7 @@ CFLAGS="$ENV_CFLAGS $OPT_CFLAGS $GDB_FLAGS $OS_CFLAGS \
 	$TRACE_CFLAGS $COVERAGE_CFLAGS $EXTRA_WARNINGS $WERROR_CFLAGS \
 	-D_GNU_SOURCE -D_LGPL_SOURCE -std=gnu99"
 CPPFLAGS="$ENV_CPPFLAGS $ANSI_CPPFLAGS $OS_CPPFLAGS"
-LDFLAGS="$ENV_LDFLAGS $COVERAGE_LDFLAGS $OS_LDFLAGS $TRACE_LDFLAGS"
+LDFLAGS="$ENV_LDFLAGS $COVERAGE_LDFLAGS $OS_LDFLAGS"
 
 # substitute what we need:
 AC_SUBST([OS_DYFLAGS])

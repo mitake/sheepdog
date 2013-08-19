@@ -5,7 +5,7 @@ DEBVERS         ?= $(shell dpkg-parsechangelog | sed -n -e 's/^Version: //p')
 VERSION         ?= $(shell echo '$(DEBVERS)' | sed -e 's/^[[:digit:]]*://' -e 's/[-].*//')
 DEBFLAVOR       ?= $(shell dpkg-parsechangelog | grep -E ^Distribution: | cut -d" " -f2)
 DEBPKGNAME      ?= $(shell dpkg-parsechangelog | grep -E ^Source: | cut -d" " -f2)
-UPSTREAM_GIT    ?= git://github.com/collie/sheepdog.git
+UPSTREAM_GIT    ?= git://github.com/sheepdog/sheepdog.git
 GIT_TAG         ?= $(shell echo v'$(VERSION)' | sed -e 's/~/_/')
 
 %:
@@ -13,6 +13,12 @@ GIT_TAG         ?= $(shell echo v'$(VERSION)' | sed -e 's/~/_/')
 
 override_dh_builddeb:
 	dh_builddeb --destdir=. -- -Zxz -z9
+
+override_dh_autoreconf:
+	dh_autoreconf --mode=timesize
+
+override_dh_auto_build:
+	dh_auto_build --parallel
 
 UNAME := $(shell uname)
 ifeq ($(UNAME),Linux)

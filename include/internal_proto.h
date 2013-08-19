@@ -13,7 +13,7 @@
 
 /*
  * This file specified the sheepdog-internal protocol, which is spoken between
- * sheepdog daemons, as well as between collie and sheepdog daemon for internal
+ * sheepdog daemons, as well as between dog and sheepdog daemon for internal
  * operations.
  */
 
@@ -33,7 +33,7 @@
 
 /*
  * Operations with opcodes above 0x80 are considered part of the inter-sheep
- * include sheep-collie protocol and are versioned using SD_SHEEP_PROTO_VER
+ * include sheep-dog protocol and are versioned using SD_SHEEP_PROTO_VER
  * instead of SD_PROTO_VER.
  *
  * These same applies for the above 0x80 flags and error values below.
@@ -50,12 +50,14 @@
 #define SD_OP_RESTORE        0x92
 #define SD_OP_GET_SNAP_FILE  0x93
 #define SD_OP_CLEANUP        0x94
-#define SD_OP_TRACE          0x95
+#define SD_OP_TRACE_STATUS   0x95
 #define SD_OP_TRACE_READ_BUF 0x96
 #define SD_OP_STAT_RECOVERY  0x97
 #define SD_OP_FLUSH_DEL_CACHE  0x98
 #define SD_OP_NOTIFY_VDI_DEL 0x99
 #define SD_OP_KILL_NODE      0x9A
+#define SD_OP_TRACE_ENABLE   0x9B
+#define SD_OP_TRACE_DISABLE  0x9C
 #define SD_OP_GET_OBJ_LIST   0xA1
 #define SD_OP_GET_EPOCH      0xA2
 #define SD_OP_CREATE_AND_WRITE_PEER 0xA3
@@ -76,6 +78,7 @@
 #define SD_OP_MD_UNPLUG 0xB3
 #define SD_OP_GET_HASH       0xB4
 #define SD_OP_REWEIGHT       0xB5
+#define SD_OP_GET_CACHE_INFO 0xB6
 
 /* internal flags for hdr.flags, must be above 0x80 */
 #define SD_FLAG_CMD_RECOVERY 0x0080
@@ -194,6 +197,20 @@ struct recovery_state {
 	enum rw_state state;
 	uint64_t nr_finished;
 	uint64_t nr_total;
+};
+
+#define CACHE_MAX	1024
+struct cache_info {
+	uint32_t vid;
+	uint32_t dirty;
+	uint32_t total;
+};
+
+struct object_cache_info {
+	uint64_t size;
+	uint64_t used;
+	struct cache_info caches[CACHE_MAX];
+	int count;
 };
 
 #endif /* __INTERNAL_PROTO_H__ */

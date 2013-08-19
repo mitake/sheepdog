@@ -1,60 +1,50 @@
 #!/bin/bash
 
 # Test md hot-plug and hot-unplug
-seq=`basename $0`
-echo "QA output created by $seq"
 
-here=`pwd`
-tmp=/tmp/$$
-status=1        # failure is the default!
-
-# get standard environment, filters and checks
-. ./common.rc
-. ./common.filter
+. ./common
 
 MD=true
 
 if [ "$STORE" != "/tmp/sheepdog/057" ]; then
-    _notrun "This test cannot be run when WD is manually set"
+	_notrun "This test cannot be run when WD is manually set"
 fi
-
-_cleanup
 
 for i in 0 1 2; do
 	_start_sheep $i
 done
 _wait_for_sheep 3
 _cluster_format
-$COLLIE vdi create test 100M -P
+$DOG vdi create test 100M -P
 
 _md_info
 
 # plug during node event
 _start_sheep 3
 _wait_for_sheep 4
-$COLLIE node md plug  $STORE/0/d3,$STORE/0/d4
+$DOG node md plug  $STORE/0/d3,$STORE/0/d4
 _wait_for_sheep_recovery 0
 _md_info
-$COLLIE vdi check test
-$COLLIE cluster info | _filter_cluster_info
+$DOG vdi check test
+$DOG cluster info | _filter_cluster_info
 
 # plug duplicate path
-$COLLIE node md plug  $STORE/0/d3
-$COLLIE node recovery
+$DOG node md plug  $STORE/0/d3
+$DOG node recovery
 _md_info
 
 # unplug
-$COLLIE node md unplug  $STORE/0/d0,$STORE/0/d1
+$DOG node md unplug  $STORE/0/d0,$STORE/0/d1
 _wait_for_sheep_recovery 0
 _md_info
-$COLLIE vdi check test
-$COLLIE cluster info | _filter_cluster_info
+$DOG vdi check test
+$DOG cluster info | _filter_cluster_info
 
 # unplug invalid path
-$COLLIE node md unplug  $STORE/0/d0
-$COLLIE node recovery
+$DOG node md unplug  $STORE/0/d0
+$DOG node recovery
 _md_info
-$COLLIE cluster info | _filter_cluster_info
+$DOG cluster info | _filter_cluster_info
 
 # check stale object purging
 find $STORE/*/d*/.stale/ -type f | _filter_store

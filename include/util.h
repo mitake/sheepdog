@@ -15,7 +15,6 @@
 #include <errno.h>
 
 #include "logger.h"
-#include "bitops.h"
 #include "list.h"
 #include "compiler.h"
 
@@ -112,6 +111,7 @@ int install_sighandler(int signum, void (*handler)(int), bool once);
 int install_crash_handler(void (*handler)(int));
 void reraise_crash_signal(int signo, int status);
 pid_t gettid(void);
+int tkill(int tid, int sig);
 bool is_xattr_enabled(const char *path);
 
 void find_zero_blocks(const void *buf, uint64_t *poffset, uint32_t *plen);
@@ -184,12 +184,12 @@ int atomic_create_and_write(const char *path, char *buf, size_t len,
 #endif
 
 #ifndef NDEBUG
-#define assert(expr)							\
-({									\
-	if (!(expr)) {							\
-		sd_printf(SDOG_EMERG, "Asserting `%s' failed.", #expr);	\
-		abort();						\
-	}								\
+#define assert(expr)						\
+({								\
+	if (!(expr)) {						\
+		sd_emerg("Asserting `%s' failed.", #expr);	\
+		abort();					\
+	}							\
 })
 #else
 #define assert(expr) ((void)0)
@@ -275,7 +275,7 @@ static inline void sd_init_lock(struct sd_lock *lock)
 		ret = pthread_rwlock_init(&lock->rwlock, NULL);
 	} while (ret == EAGAIN);
 
-	if (ret != 0)
+	if (unlikely(ret != 0))
 		panic("failed to initialize a lock, %s", strerror(ret));
 }
 
@@ -283,7 +283,7 @@ static inline void sd_destroy_lock(struct sd_lock *lock)
 {
 	int ret = pthread_rwlock_destroy(&lock->rwlock);
 
-	if (ret != 0)
+	if (unlikely(ret != 0))
 		panic("failed to destroy a lock, %s", strerror(ret));
 }
 
@@ -295,7 +295,7 @@ static inline void sd_read_lock(struct sd_lock *lock)
 		ret = pthread_rwlock_rdlock(&lock->rwlock);
 	} while (ret == EAGAIN);
 
-	if (ret != 0)
+	if (unlikely(ret != 0))
 		panic("failed to lock for reading, %s", strerror(ret));
 }
 
@@ -303,7 +303,7 @@ static inline void sd_write_lock(struct sd_lock *lock)
 {
 	int ret = pthread_rwlock_wrlock(&lock->rwlock);
 
-	if (ret != 0)
+	if (unlikely(ret != 0))
 		panic("failed to lock for writing, %s", strerror(ret));
 }
 
@@ -311,7 +311,7 @@ static inline void sd_unlock(struct sd_lock *lock)
 {
 	int ret = pthread_rwlock_unlock(&lock->rwlock);
 
-	if (ret != 0)
+	if (unlikely(ret != 0))
 		panic("failed to unlock, %s", strerror(ret));
 }
 

@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include "internal_proto.h"
 #include "util.h"
+#include "bitops.h"
 #include "list.h"
 #include "net.h"
 
@@ -46,8 +47,8 @@ struct trace_graph_item {
 	int type;
 	char fname[TRACE_FNAME_LEN];
 	int depth;
-	unsigned long long entry_time;
-	unsigned long long return_time;
+	uint64_t entry_time;
+	uint64_t return_time;
 };
 
 static inline void sd_init_req(struct sd_req *req, uint8_t opcode)
@@ -100,7 +101,7 @@ static inline int get_vnode_next_idx(const struct sd_vnode *entries,
 	idx = prev_idxs[nr_prev_idxs - 1];
 	for (;;) {
 		idx = (idx + 1) % nr_entries;
-		if (idx == first_idx)
+		if (unlikely(idx == first_idx))
 			panic("can't find next new idx");
 
 		for (found = false, i = 0; i < nr_prev_idxs; i++) {
@@ -314,10 +315,9 @@ static inline int nodes_to_vnodes(struct sd_node *nodes, int nr,
 
 #define MAX_NODE_STR_LEN 256
 
-static inline char *node_to_str(const struct sd_node *id)
+static inline const char *node_to_str(const struct sd_node *id)
 {
-	static char str[MAX_NODE_STR_LEN];
-	char name[MAX_NODE_STR_LEN];
+	static __thread char str[MAX_NODE_STR_LEN];
 	int af = AF_INET6;
 	const uint8_t *addr = id->nid.addr;
 
@@ -332,7 +332,7 @@ static inline char *node_to_str(const struct sd_node *id)
 
 	snprintf(str, sizeof(str), "%s ip:%s port:%d",
 		(af == AF_INET) ? "IPv4" : "IPv6",
-		addr_to_str(name, sizeof(name), id->nid.addr, 0), id->nid.port);
+		addr_to_str(id->nid.addr, 0), id->nid.port);
 
 	return str;
 }

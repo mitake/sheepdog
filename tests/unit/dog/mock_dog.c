@@ -11,11 +11,11 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "collie.h"
+#include "dog.h"
 #include "mock.h"
 
-/* collie mock */
-const char *sdhost = "127.0.0.1";
+/* dog mock */
+uint8_t sdhost[16] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 127, 0, 0, 1 };
 int sdport = 7000, sd_vnodes_nr = 100;
 bool highlight = true;
 bool raw_output;

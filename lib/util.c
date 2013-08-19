@@ -46,9 +46,9 @@ try_to_free_t set_try_to_free_routine(try_to_free_t routine)
 void *xmalloc(size_t size)
 {
 	void *ret = malloc(size);
-	if (!ret && !size)
+	if (unlikely(!ret) && unlikely(!size))
 		ret = malloc(1);
-	if (!ret) {
+	if (unlikely(!ret)) {
 		try_to_free_routine(size);
 		ret = malloc(size);
 		if (!ret && !size)
@@ -64,12 +64,12 @@ void *xzalloc(size_t size)
 	return xcalloc(1, size);
 }
 
-notrace void *xrealloc(void *ptr, size_t size)
+void *xrealloc(void *ptr, size_t size)
 {
 	void *ret = realloc(ptr, size);
-	if (!ret && !size)
+	if (unlikely(!ret) && unlikely(!size))
 		ret = realloc(ptr, 1);
-	if (!ret) {
+	if (unlikely(!ret)) {
 		try_to_free_routine(size);
 		ret = realloc(ptr, size);
 		if (!ret && !size)
@@ -83,9 +83,9 @@ notrace void *xrealloc(void *ptr, size_t size)
 void *xcalloc(size_t nmemb, size_t size)
 {
 	void *ret = calloc(nmemb, size);
-	if (!ret && (!nmemb || !size))
+	if (unlikely(!ret) && unlikely(!nmemb || !size))
 		ret = calloc(1, 1);
-	if (!ret) {
+	if (unlikely(!ret)) {
 		try_to_free_routine(nmemb * size);
 		ret = calloc(nmemb, size);
 		if (!ret && (!nmemb || !size))
@@ -99,7 +99,7 @@ void *xcalloc(size_t nmemb, size_t size)
 void *xvalloc(size_t size)
 {
 	void *ret = valloc(size);
-	if (!ret)
+	if (unlikely(!ret))
 		panic("Out of memory");
 	return ret;
 }
@@ -109,7 +109,7 @@ static ssize_t _read(int fd, void *buf, size_t len)
 	ssize_t nr;
 	while (true) {
 		nr = read(fd, buf, len);
-		if ((nr < 0) && (errno == EAGAIN || errno == EINTR))
+		if (unlikely(nr < 0) && (errno == EAGAIN || errno == EINTR))
 			continue;
 		return nr;
 	}
@@ -120,7 +120,7 @@ static ssize_t _write(int fd, const void *buf, size_t len)
 	ssize_t nr;
 	while (true) {
 		nr = write(fd, buf, len);
-		if ((nr < 0) && (errno == EAGAIN || errno == EINTR))
+		if (unlikely(nr < 0) && (errno == EAGAIN || errno == EINTR))
 			continue;
 		return nr;
 	}
@@ -133,9 +133,9 @@ ssize_t xread(int fd, void *buf, size_t count)
 
 	while (count > 0) {
 		ssize_t loaded = _read(fd, p, count);
-		if (loaded < 0)
+		if (unlikely(loaded < 0))
 			return -1;
-		if (loaded == 0)
+		if (unlikely(loaded == 0))
 			return total;
 		count -= loaded;
 		p += loaded;
@@ -152,9 +152,9 @@ ssize_t xwrite(int fd, const void *buf, size_t count)
 
 	while (count > 0) {
 		ssize_t written = _write(fd, p, count);
-		if (written < 0)
+		if (unlikely(written < 0))
 			return -1;
-		if (!written) {
+		if (unlikely(!written)) {
 			errno = ENOSPC;
 			return -1;
 		}
@@ -171,7 +171,7 @@ static ssize_t _pread(int fd, void *buf, size_t len, off_t offset)
 	ssize_t nr;
 	while (true) {
 		nr = pread(fd, buf, len, offset);
-		if ((nr < 0) && (errno == EAGAIN || errno == EINTR))
+		if (unlikely(nr < 0) && (errno == EAGAIN || errno == EINTR))
 			continue;
 		return nr;
 	}
@@ -182,7 +182,7 @@ static ssize_t _pwrite(int fd, const void *buf, size_t len, off_t offset)
 	ssize_t nr;
 	while (true) {
 		nr = pwrite(fd, buf, len, offset);
-		if ((nr < 0) && (errno == EAGAIN || errno == EINTR))
+		if (unlikely(nr < 0) && (errno == EAGAIN || errno == EINTR))
 			continue;
 		return nr;
 	}
@@ -195,9 +195,9 @@ ssize_t xpread(int fd, void *buf, size_t count, off_t offset)
 
 	while (count > 0) {
 		ssize_t loaded = _pread(fd, p, count, offset);
-		if (loaded < 0)
+		if (unlikely(loaded < 0))
 			return -1;
-		if (loaded == 0)
+		if (unlikely(loaded == 0))
 			return total;
 		count -= loaded;
 		p += loaded;
@@ -215,9 +215,9 @@ ssize_t xpwrite(int fd, const void *buf, size_t count, off_t offset)
 
 	while (count > 0) {
 		ssize_t written = _pwrite(fd, p, count, offset);
-		if (written < 0)
+		if (unlikely(written < 0))
 			return -1;
-		if (!written) {
+		if (unlikely(!written)) {
 			errno = ENOSPC;
 			return -1;
 		}
@@ -256,7 +256,7 @@ int xfallocate(int fd, int mode, off_t offset, off_t len)
 
 	do {
 		ret = fallocate(fd, mode, offset, len);
-	} while (ret < 0 && (errno == EAGAIN || errno == EINTR));
+	} while (unlikely(ret < 0) && (errno == EAGAIN || errno == EINTR));
 
 	return ret;
 }
@@ -267,7 +267,7 @@ int xftruncate(int fd, off_t length)
 
 	do {
 		ret = ftruncate(fd, length);
-	} while (ret < 0 && (errno == EAGAIN || errno == EINTR));
+	} while (unlikely(ret < 0) && (errno == EAGAIN || errno == EINTR));
 
 	return ret;
 }
@@ -284,11 +284,11 @@ int eventfd_xread(int efd)
 
 	do {
 		ret = eventfd_read(efd, &value);
-	} while (ret < 0 && errno == EINTR);
+	} while (unlikely(ret < 0) && errno == EINTR);
 
 	if (ret == 0)
 		ret = value;
-	else if (errno != EAGAIN)
+	else if (unlikely(errno != EAGAIN))
 		panic("eventfd_read() failed, %m");
 
 	return ret;
@@ -300,9 +300,9 @@ void eventfd_xwrite(int efd, int value)
 
 	do {
 		ret = eventfd_write(efd, (eventfd_t)value);
-	} while (ret < 0 && (errno == EINTR || errno == EAGAIN));
+	} while (unlikely(ret < 0) && (errno == EINTR || errno == EAGAIN));
 
-	if (ret < 0)
+	if (unlikely(ret < 0))
 		panic("eventfd_write() failed, %m");
 }
 
@@ -316,7 +316,7 @@ void eventfd_xwrite(int efd, int value)
  * @param buf_size size of destination buffer
  * @param str source string
  */
-void notrace pstrcpy(char *buf, int buf_size, const char *str)
+void pstrcpy(char *buf, int buf_size, const char *str)
 {
 	int c;
 	char *q = buf;
@@ -345,7 +345,7 @@ int purge_directory(char *dir_path)
 	dir = opendir(dir_path);
 	if (!dir) {
 		if (errno != ENOENT)
-			sd_eprintf("failed to open %s: %m", dir_path);
+			sd_err("failed to open %s: %m", dir_path);
 		return -errno;
 	}
 
@@ -356,7 +356,7 @@ int purge_directory(char *dir_path)
 		snprintf(path, sizeof(path), "%s/%s", dir_path, d->d_name);
 		ret = stat(path, &s);
 		if (ret) {
-			sd_eprintf("failed to stat %s: %m", path);
+			sd_err("failed to stat %s: %m", path);
 			goto out;
 		}
 		if (S_ISDIR(s.st_mode))
@@ -365,9 +365,8 @@ int purge_directory(char *dir_path)
 			ret = unlink(path);
 
 		if (ret != 0) {
-			sd_eprintf("failed to remove %s %s: %m",
-				   S_ISDIR(s.st_mode) ? "directory" : "file",
-				   path);
+			sd_err("failed to remove %s %s: %m",
+			       S_ISDIR(s.st_mode) ? "directory" : "file", path);
 			goto out;
 		}
 	}
@@ -523,10 +522,10 @@ void reraise_crash_signal(int signo, int status)
 
 	/* We won't get here normally. */
 	if (ret != 0)
-		sd_printf(SDOG_EMERG, "failed to re-raise signal %d (%s).",
+		sd_emerg("failed to re-raise signal %d (%s).",
 			  signo, strsignal(signo));
 	else
-		sd_printf(SDOG_EMERG, "default handler for the re-raised "
+		sd_emerg("default handler for the re-raised "
 			  "signal %d (%s) didn't work expectedly", signo,
 			  strsignal(signo));
 
@@ -536,6 +535,11 @@ void reraise_crash_signal(int signo, int status)
 pid_t gettid(void)
 {
 	return syscall(SYS_gettid);
+}
+
+int tkill(int tid, int sig)
+{
+	return syscall(SYS_tgkill, getpid(), tid, sig);
 }
 
 bool is_xattr_enabled(const char *path)
@@ -563,30 +567,29 @@ again:
 	if (fd < 0) {
 		if (errno == EEXIST) {
 			if (force_create) {
-				sd_dprintf("clean up a temporary file %s",
-					   tmp_path);
+				sd_debug("clean up a temporary file %s",
+					 tmp_path);
 				unlink(tmp_path);
 				goto again;
 			} else
-				sd_dprintf("someone else is dealing with %s",
-					   tmp_path);
+				sd_debug("someone else is dealing with %s",
+					 tmp_path);
 		} else
-			sd_eprintf("failed to open temporal file %s, %m",
-				   tmp_path);
+			sd_err("failed to open temporal file %s, %m", tmp_path);
 		ret = -1;
 		goto end;
 	}
 
 	ret = xwrite(fd, buf, len);
-	if (ret != len) {
-		sd_eprintf("failed to write %s, %m", path);
+	if (unlikely(ret != len)) {
+		sd_err("failed to write %s, %m", path);
 		ret = -1;
 		goto close_fd;
 	}
 
 	ret = rename(tmp_path, path);
-	if (ret < 0) {
-		sd_eprintf("failed to rename %s, %m", path);
+	if (unlikely(ret < 0)) {
+		sd_err("failed to rename %s, %m", path);
 		ret = -1;
 	}
 
@@ -594,4 +597,141 @@ close_fd:
 	close(fd);
 end:
 	return ret;
+}
+
+/*
+ * Returns a list organized in an intermediate format suited
+ * to chaining of merge() calls: null-terminated, no reserved or
+ * sentinel head node, "prev" links not maintained.
+ */
+static struct list_head *merge(void *priv,
+			       int (*cmp)(void *priv, struct list_head *a,
+					  struct list_head *b),
+			       struct list_head *a, struct list_head *b)
+{
+	struct list_head head, *tail = &head;
+
+	while (a && b) {
+		/* if equal, take 'a' -- important for sort stability */
+		if ((*cmp)(priv, a, b) <= 0) {
+			tail->next = a;
+			a = a->next;
+		} else {
+			tail->next = b;
+			b = b->next;
+		}
+		tail = tail->next;
+	}
+	tail->next = a?:b;
+	return head.next;
+}
+
+/*
+ * Combine final list merge with restoration of standard doubly-linked
+ * list structure.  This approach duplicates code from merge(), but
+ * runs faster than the tidier alternatives of either a separate final
+ * prev-link restoration pass, or maintaining the prev links
+ * throughout.
+ */
+static void
+merge_and_restore_back_links(void *priv,
+			     int (*cmp)(void *priv, struct list_head *a,
+					struct list_head *b),
+			     struct list_head *head,
+			     struct list_head *a, struct list_head *b)
+{
+	struct list_head *tail = head;
+
+	while (a && b) {
+		/* if equal, take 'a' -- important for sort stability */
+		if ((*cmp)(priv, a, b) <= 0) {
+			tail->next = a;
+			a->prev = tail;
+			a = a->next;
+		} else {
+			tail->next = b;
+			b->prev = tail;
+			b = b->next;
+		}
+		tail = tail->next;
+	}
+	tail->next = a ? : b;
+
+	do {
+		/*
+		 * In worst cases this loop may run many iterations.
+		 * Continue callbacks to the client even though no
+		 * element comparison is needed, so the client's cmp()
+		 * routine can invoke cond_resched() periodically.
+		 */
+		(*cmp)(priv, tail->next, tail->next);
+
+		tail->next->prev = tail;
+		tail = tail->next;
+	} while (tail->next);
+
+	tail->next = head;
+	head->prev = tail;
+}
+
+/*
+ * list_sort - sort a list
+ * @priv: private data, opaque to list_sort(), passed to @cmp
+ * @head: the list to sort
+ * @cmp: the elements comparison function
+ *
+ * This function implements "merge sort", which has O(nlog(n))
+ * complexity.
+ *
+ * The comparison function @cmp must return a negative value if @a
+ * should sort before @b, and a positive value if @a should sort after
+ * @b. If @a and @b are equivalent, and their original relative
+ * ordering is to be preserved, @cmp must return 0.
+ */
+void list_sort(void *priv, struct list_head *head,
+	       int (*cmp)(void *priv, struct list_head *a,
+			  struct list_head *b))
+{
+	/* sorted partial lists -- last slot is a sentinel */
+#define MAX_LIST_LENGTH_BITS 20
+	struct list_head *part[MAX_LIST_LENGTH_BITS+1];
+	int lev;  /* index into part[] */
+	int max_lev = 0;
+	struct list_head *list;
+
+	if (list_empty(head))
+		return;
+
+	memset(part, 0, sizeof(part));
+
+	head->prev->next = NULL;
+	list = head->next;
+
+	while (list) {
+		struct list_head *cur = list;
+		list = list->next;
+		cur->next = NULL;
+
+		for (lev = 0; part[lev]; lev++) {
+			cur = merge(priv, cmp, part[lev], cur);
+			part[lev] = NULL;
+		}
+		if (lev > max_lev) {
+			if (unlikely(lev >= ARRAY_SIZE(part)-1)) {
+				/*
+				 * list passed to list_sort() too long for
+				 * efficiency
+				 */
+				lev--;
+			}
+			max_lev = lev;
+		}
+		part[lev] = cur;
+	}
+
+	for (lev = 0; lev < max_lev; lev++)
+		if (part[lev])
+			list = merge(priv, cmp, part[lev], list);
+
+	merge_and_restore_back_links(priv, cmp, head, part[max_lev], list);
 }

@@ -2,18 +2,7 @@
 
 # Test concurrent start up
 
-seq=`basename $0`
-echo "QA output created by $seq"
-
-here=`pwd`
-tmp=/tmp/$$
-status=1        # failure is the default!
-
-# get standard environment, filters and checks
-. ./common.rc
-. ./common.filter
-
-_cleanup
+. ./common
 
 for i in 0 1 2; do
     _start_sheep $i
@@ -23,7 +12,7 @@ _wait_for_sheep 3
 
 _cluster_format
 
-$COLLIE node list
+$DOG node list
 
 # make sure sheep1 and sheep2 quit simutaniously
 _kill_sheep 1 &
@@ -44,5 +33,5 @@ sleep 1
 
 echo check whether all nodes have the same cluster info
 for i in 1 2; do
-    $COLLIE node list -p 700$i
+    $DOG node list -p 700$i
 done

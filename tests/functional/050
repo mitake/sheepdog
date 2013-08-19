@@ -2,20 +2,9 @@
 
 # Test IO NIC function
 
-seq=`basename $0`
-echo "QA output created by $seq"
-
-here=`pwd`
-tmp=/tmp/$$
-status=1        # failure is the default!
+. ./common
 
 trap "_uninit; exit \$status" 0 1 2 3 15
-
-# get standard environment, filters and checks
-. ./common.rc
-. ./common.filter
-
-_need_to_be_root
 
 _uninit()
 {
@@ -23,7 +12,7 @@ _uninit()
 	iptables -D INPUT -p tcp --dport 8001 -j DROP
 }
 
-_cleanup
+_need_to_be_root
 
 for i in `seq 0 2`; do
 	_start_sheep $i "-i host=127.0.0.1,port=$((8000+$i))"
@@ -33,14 +22,14 @@ _wait_for_sheep 3
 
 _cluster_format
 
-$COLLIE vdi create test 100M
-dd if=/dev/zero | $COLLIE vdi write test &
+$DOG vdi create test 100M
+dd if=/dev/zero | $DOG vdi write test &
 
 # simulate IO NIC down of sheep 1
 iptables -A INPUT -p tcp --sport 8001 -j DROP
 iptables -A INPUT -p tcp --dport 8001 -j DROP
 
-# wait for collie to finish
+# wait for dog to finish
 wait
 # Logger flush in 1 second internval. We need assure log is flushed.
 sleep 1
@@ -48,6 +37,6 @@ sleep 1
 if [ "`grep fallback $STORE/0/sheep.log`" ];then
 	echo fallback done
 fi
-$COLLIE vdi check test
+$DOG vdi check test
 
 status=0

@@ -2,18 +2,7 @@
 
 # Test vdi create operation during node changes
 
-seq=`basename $0`
-echo "QA output created by $seq"
-
-here=`pwd`
-tmp=/tmp/$$
-status=1        # failure is the default!
-
-# get standard environment, filters and checks
-. ./common.rc
-. ./common.filter
-
-_cleanup
+. ./common
 
 if [[ "$DRIVER" == zoo* ]];then
     DRIVER=${DRIVER/1000/5000}
@@ -30,7 +19,7 @@ _cluster_format
 # create new vdis
 (
 for i in `seq 0 40`;do
-    $COLLIE vdi create test$i 4M
+    $DOG vdi create test$i 4M
 done
 ) &
 
@@ -47,7 +36,7 @@ _wait_for_sheep_recovery 0
 for i in `seq 1 5`; do _start_sheep $i;done
 _wait_for_sheep 8
 
-# wait for collie to finish
+# wait for dog to finish
 wait
 
-echo `$COLLIE vdi list | wc -l`
+echo `$DOG vdi list | wc -l`

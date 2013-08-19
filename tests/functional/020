@@ -2,18 +2,7 @@
 
 # Test object cache reclaim
 
-seq=`basename $0`
-echo "QA output created by $seq"
-
-here=`pwd`
-tmp=/tmp/$$
-status=1        # failure is the default!
-
-# get standard environment, filters and checks
-. ./common.rc
-. ./common.filter
-
-_cleanup
+. ./common
 
 for i in `seq 0 2`; do
     _start_sheep $i "-w size=20"
@@ -23,9 +12,9 @@ _wait_for_sheep "3"
 
 _cluster_format -c 2
 
-$COLLIE vdi create test 40M
+$DOG vdi create test 40M
 
-_random | $COLLIE vdi write test
+_random | $DOG vdi write test
 
 # check cache size, should be 20 * 80%
 nr=`ls $STORE/0/cache/7c2b25 | wc -l`

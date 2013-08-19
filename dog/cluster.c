@@ -14,7 +14,7 @@
 #include <ctype.h>
 #include <sys/time.h>
 
-#include "collie.h"
+#include "dog.h"
 #include "farm/farm.h"
 
 static struct sd_option cluster_options[] = {
@@ -43,13 +43,12 @@ static int list_store(void)
 	sd_init_req(&hdr, SD_OP_GET_STORE_LIST);
 	hdr.data_length = 512;
 
-	ret = collie_exec_req(sdhost, sdport, &hdr, buf);
+	ret = dog_exec_req(sdhost, sdport, &hdr, buf);
 	if (ret < 0)
 		return EXIT_SYSFAIL;
 
 	if (rsp->result != SD_RES_SUCCESS) {
-		fprintf(stderr, "Restore failed: %s\n",
-				sd_strerror(rsp->result));
+		sd_err("Restore failed: %s", sd_strerror(rsp->result));
 		return EXIT_FAILURE;
 	}
 
@@ -83,7 +82,7 @@ static int cluster_format(int argc, char **argv)
 	sd_init_req(&hdr, SD_OP_READ_VDIS);
 	hdr.data_length = sizeof(vdi_inuse);
 
-	ret = collie_exec_req(sdhost, sdport, &hdr, &vdi_inuse);
+	ret = dog_exec_req(sdhost, sdport, &hdr, &vdi_inuse);
 	if (ret < 0)
 		return EXIT_SYSFAIL;
 
@@ -104,13 +103,12 @@ static int cluster_format(int argc, char **argv)
 	hdr.flags |= SD_FLAG_CMD_WRITE;
 
 	printf("using backend %s store\n", store_name);
-	ret = collie_exec_req(sdhost, sdport, &hdr, store_name);
+	ret = dog_exec_req(sdhost, sdport, &hdr, store_name);
 	if (ret < 0)
 		return EXIT_SYSFAIL;
 
 	if (rsp->result != SD_RES_SUCCESS) {
-		fprintf(stderr, "Format failed: %s\n",
-				sd_strerror(rsp->result));
+		sd_err("Format failed: %s", sd_strerror(rsp->result));
 		if (rsp->result == SD_RES_NO_STORE)
 			return list_store();
 		else
@@ -137,7 +135,7 @@ static int cluster_info(int argc, char **argv)
 	sd_init_req(&hdr, SD_OP_STAT_CLUSTER);
 	hdr.data_length = log_length;
 
-	ret = collie_exec_req(sdhost, sdport, &hdr, logs);
+	ret = dog_exec_req(sdhost, sdport, &hdr, logs);
 	if (ret < 0)
 		goto error;
 
@@ -158,7 +156,6 @@ static int cluster_info(int argc, char **argv)
 	nr_logs = rsp->data_length / sizeof(struct epoch_log);
 	for (i = 0; i < nr_logs; i++) {
 		int j;
-		char name[128];
 		const struct sd_node *entry;
 
 		ti = logs[i].time;
@@ -175,8 +172,7 @@ static int cluster_info(int argc, char **argv)
 			entry = logs[i].nodes + j;
 			printf("%s%s",
 			       (j == 0) ? "" : ", ",
-			       addr_to_str(name, sizeof(name),
-					   entry->nid.addr, entry->nid.port));
+			       addr_to_str(entry->nid.addr, entry->nid.port));
 		}
 		printf("]\n");
 	}
@@ -197,7 +193,7 @@ static int cluster_shutdown(int argc, char **argv)
 
 	ret = send_light_req(&hdr, sdhost, sdport);
 	if (ret) {
-		fprintf(stderr, "failed to execute request\n");
+		sd_err("failed to execute request");
 		return EXIT_FAILURE;
 	}
 
@@ -236,7 +232,7 @@ static int list_snapshot(int argc, char **argv)
 	ret = EXIT_SUCCESS;
 out:
 	if (ret)
-		fprintf(stderr, "Fail to list snapshot.\n");
+		sd_err("Fail to list snapshot.");
 	free(buf);
 	return ret;
 }
@@ -280,12 +276,12 @@ static int save_snapshot(int argc, char **argv)
 
 	unused = strtol(tag, &p, 10);
 	if (tag != p) {
-		fprintf(stderr, "Tag should not start with number.\n");
+		sd_err("Tag should not start with number.");
 		return EXIT_USAGE;
 	}
 
 	if (!argv[optind]) {
-		fprintf(stderr, "Please specify the path to save snapshot.\n");
+		sd_err("Please specify the path to save snapshot.");
 		return EXIT_USAGE;
 	}
 	path = argv[optind];
@@ -294,8 +290,8 @@ static int save_snapshot(int argc, char **argv)
 		goto out;
 
 	if (farm_contain_snapshot(0, tag)) {
-		fprintf(stderr, "Snapshot tag has already been used for another"
-			" snapshot, please, use another one.\n");
+		sd_err("Snapshot tag has already been used for another"
+		       " snapshot, please, use another one.");
 		goto out;
 	}
 
@@ -308,7 +304,7 @@ static int save_snapshot(int argc, char **argv)
 	ret = EXIT_SUCCESS;
 out:
 	if (ret)
-		fprintf(stderr, "Fail to save snapshot to path: %s.\n", path);
+		sd_err("Fail to save snapshot to path: %s.", path);
 	object_tree_free();
 	return ret;
 }
@@ -325,7 +321,7 @@ static int load_snapshot(int argc, char **argv)
 		idx = 0;
 
 	if (!argv[optind]) {
-		fprintf(stderr, "Please specify the path to save snapshot.\n");
+		sd_err("Please specify the path to save snapshot.");
 		return EXIT_USAGE;
 	}
 	path = argv[optind];
@@ -334,7 +330,7 @@ static int load_snapshot(int argc, char **argv)
 		goto out;
 
 	if (!farm_contain_snapshot(idx, tag)) {
-		fprintf(stderr, "Snapshot index or tag does not exist.\n");
+		sd_err("Snapshot index or tag does not exist.");
 		goto out;
 	}
 
@@ -347,7 +343,7 @@ static int load_snapshot(int argc, char **argv)
 	ret = EXIT_SUCCESS;
 out:
 	if (ret)
-		fprintf(stderr, "Fail to load snapshot\n");
+		sd_err("Fail to load snapshot");
 	return ret;
 }
 
@@ -383,13 +379,13 @@ static int cluster_force_recover(int argc, char **argv)
 	sd_init_req(&hdr, SD_OP_FORCE_RECOVER);
 	hdr.data_length = sizeof(nodes);
 
-	ret = collie_exec_req(sdhost, sdport, &hdr, nodes);
+	ret = dog_exec_req(sdhost, sdport, &hdr, nodes);
 	if (ret < 0)
 		return EXIT_SYSFAIL;
 
 	if (rsp->result != SD_RES_SUCCESS) {
-		fprintf(stderr, "failed to execute request, %s\n",
-			sd_strerror(rsp->result));
+		sd_err("failed to execute request, %s",
+		       sd_strerror(rsp->result));
 		return EXIT_FAILURE;
 	}
 
@@ -446,12 +442,12 @@ static int cluster_recover(int argc, char **argv)
 /* Subcommand list of snapshot */
 static struct subcommand cluster_snapshot_cmd[] = {
 	{"save", NULL, "h", "save snapshot to localpath",
-	 NULL, SUBCMD_FLAG_NEED_ARG|SUBCMD_FLAG_NEED_NODELIST,
+	 NULL, CMD_NEED_ARG|CMD_NEED_NODELIST,
 	 save_snapshot, NULL},
 	{"list", NULL, "h", "list snapshot of localpath",
-	 NULL, SUBCMD_FLAG_NEED_ARG, list_snapshot, NULL},
+	 NULL, CMD_NEED_ARG, list_snapshot, NULL},
 	{"load", NULL, "h", "load snapshot from localpath",
-	 NULL, SUBCMD_FLAG_NEED_ARG, load_snapshot, NULL},
+	 NULL, CMD_NEED_ARG, load_snapshot, NULL},
 	{NULL},
 };
 
@@ -474,17 +470,17 @@ static int cluster_reweight(int argc, char **argv)
 
 static struct subcommand cluster_cmd[] = {
 	{"info", NULL, "aprh", "show cluster information",
-	 NULL, SUBCMD_FLAG_NEED_NODELIST, cluster_info, cluster_options},
+	 NULL, CMD_NEED_NODELIST, cluster_info, cluster_options},
 	{"format", NULL, "bcaph", "create a Sheepdog store",
 	 NULL, 0, cluster_format, cluster_options},
 	{"shutdown", NULL, "aph", "stop Sheepdog",
 	 NULL, 0, cluster_shutdown, cluster_options},
 	{"snapshot", "<tag|idx> <path>", "aph", "snapshot/restore the cluster",
-	 cluster_snapshot_cmd, SUBCMD_FLAG_NEED_ARG,
+	 cluster_snapshot_cmd, CMD_NEED_ARG,
 	 cluster_snapshot, cluster_options},
 	{"recover", NULL, "afph",
-	 "See 'collie cluster recover' for more information\n",
-	 cluster_recover_cmd, SUBCMD_FLAG_NEED_ARG,
+	 "See 'dog cluster recover' for more information",
+	 cluster_recover_cmd, CMD_NEED_ARG,
 	 cluster_recover, cluster_options},
 	{"reweight", NULL, "aph", "reweight the cluster", NULL, 0,
 	 cluster_reweight, cluster_options},
@@ -504,11 +500,11 @@ static int cluster_parser(int ch, char *opt)
 	case 'c':
 		copies = strtol(opt, &p, 10);
 		if (opt == p || copies < 1) {
-			fprintf(stderr, "There must be at least one copy of data\n");
+			sd_err("There must be at least one copy of data");
 			exit(EXIT_FAILURE);
 		} else if (copies > SD_MAX_COPIES) {
-			fprintf(stderr, "Redundancy may not exceed %d copies\n",
-				SD_MAX_COPIES);
+			sd_err("Redundancy may not exceed %d copies",
+			       SD_MAX_COPIES);
 			exit(EXIT_FAILURE);
 		}
 		cluster_cmd_data.copies = copies;

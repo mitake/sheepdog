@@ -49,7 +49,18 @@ static const char * const log_color[] = {
 	[SDOG_DEBUG] = TEXT_GREEN,
 };
 
-struct logger_user_info *logger_user_info;
+static const char * const log_prio_str[] = {
+	[SDOG_EMERG]   = "EMERG",
+	[SDOG_ALERT]   = "ALERT",
+	[SDOG_CRIT]    = "CRIT",
+	[SDOG_ERR]     = "ERROR",
+	[SDOG_WARNING] = "WARN",
+	[SDOG_NOTICE]  = "NOTICE",
+	[SDOG_INFO]    = "INFO",
+	[SDOG_DEBUG]   = "DEBUG",
+};
+
+static struct logger_user_info *logger_user_info;
 
 static void dolog(int prio, const char *func, int line, const char *fmt,
 		  va_list ap) __printf(4, 0);
@@ -80,6 +91,7 @@ struct logmsg {
 	char worker_name[MAX_THREAD_NAME_LEN];
 	int worker_idx;
 
+	size_t str_len;
 	char str[0];
 };
 
@@ -106,7 +118,7 @@ static __thread int worker_idx;
 static struct logarea *la;
 static const char *log_name;
 static char *log_nowname;
-static int log_level = SDOG_INFO;
+int sd_log_level = SDOG_INFO;
 static pid_t sheep_pid;
 static pid_t logger_pid;
 static key_t semkey;
@@ -116,8 +128,21 @@ static int64_t max_logsize = 500 * 1024 * 1024;  /*500MB*/
 
 static pthread_mutex_t logsize_lock = PTHREAD_MUTEX_INITIALIZER;
 
+static const char *format_thread_name(char *str, size_t size, const char *name,
+				      int idx)
+{
+	if (name && name[0] && idx)
+		snprintf(str, size, "%s %d", name, idx);
+	else if (name && name[0])
+		snprintf(str, size, "%s", name);
+	else
+		snprintf(str, size, "main");
+
+	return str;
+}
+
 /*
- * We need to set default log formatter because collie doesn't want to call
+ * We need to set default log formatter because dog doesn't want to call
  * select_log_formatter().
  */
 static void __attribute__((constructor(65535)))
@@ -135,7 +160,7 @@ init_log_formatter(void)
 	exit(1);
 }
 
-static notrace int logarea_init(int size)
+static int logarea_init(int size)
 {
 	int shmid;
 
@@ -196,7 +221,7 @@ static notrace int logarea_init(int size)
 	return 0;
 }
 
-static void notrace free_logarea(void)
+static void free_logarea(void)
 {
 	if (log_fd >= 0)
 		close(log_fd);
@@ -205,126 +230,88 @@ static void notrace free_logarea(void)
 	shmdt(la);
 }
 
-static notrace int server_log_formatter(char *buff, size_t size,
-					const struct logmsg *msg)
+static int server_log_formatter(char *buff, size_t size,
+				const struct logmsg *msg)
 {
 	char *p = buff;
 	struct tm tm;
-	int worker_name_len = strlen(msg->worker_name);
+	size_t len;
+	char thread_name[MAX_THREAD_NAME_LEN];
 
 	localtime_r(&msg->tv.tv_sec, &tm);
-	strftime(p, size, "%b %2d %H:%M:%S ", (const struct tm *)&tm);
-	p += strlen(p);
+	len = strftime(p, size, "%b %2d %H:%M:%S ", (const struct tm *)&tm);
+	p += len;
+	size -= len;
 
-	if (colorize) {
-		pstrcpy(p, size - strlen(buff), TEXT_YELLOW);
-		p += strlen(p);
-	}
-
-	if (worker_name_len && msg->worker_idx)
-		snprintf(p, size - strlen(buff), "[%s %d] ", msg->worker_name,
-			 msg->worker_idx);
-	else if (worker_name_len)
-		snprintf(p, size - strlen(buff), "[%s] ", msg->worker_name);
-	else
-		pstrcpy(p, size - strlen(buff), "[main] ");
-
-	p += strlen(p);
-
-	snprintf(p, size - strlen(buff), "%s(%d) ", msg->func, msg->line);
-	p += strlen(p);
-
-	if (colorize) {
-		pstrcpy(p, size - strlen(buff), log_color[msg->prio]);
-		p += strlen(p);
-	}
-
-	snprintf(p, size - strlen(buff), "%s", (char *)msg->str);
-	p += strlen(p);
-
-	if (colorize) {
-		pstrcpy(p, size - strlen(buff), "\033[m");
-		p += strlen(p);
-	}
+	len = snprintf(p, size, "%s%6s %s[%s] %s(%d) %s%s%s",
+		       colorize ? log_color[msg->prio] : "",
+		       log_prio_str[msg->prio],
+		       colorize ? TEXT_YELLOW : "",
+		       format_thread_name(thread_name, sizeof(thread_name),
+					  msg->worker_name, msg->worker_idx),
+		       msg->func, msg->line,
+		       colorize ? log_color[msg->prio] : "",
+		       msg->str, colorize ? TEXT_NORMAL : "");
+	if (len < 0)
+		len = 0;
+	p += min(len, size - 1);
 
 	return p - buff;
 }
 log_format_register("server", server_log_formatter);
 
-static notrace int default_log_formatter(char *buff, size_t size,
-					 const struct logmsg *msg)
+static int default_log_formatter(char *buff, size_t size,
+				 const struct logmsg *msg)
 {
-	int len;
+	size_t len = min(size, msg->str_len);
 
-	pstrcpy(buff, size, msg->str);
-	len = strlen(buff);
-	if (len > 0 && buff[len - 1] != '\n' && size > len)
-		buff[len++] = '\n';
+	memcpy(buff, msg->str, len);
 
 	return len;
 }
 log_format_register("default", default_log_formatter);
 
-static notrace int json_log_formatter(char *buff, size_t size,
+static int json_log_formatter(char *buff, size_t size,
 				const struct logmsg *msg)
 {
-	int i, body_len;
 	char *p = buff;
-
-	snprintf(p, size, "{ \"user_info\": {");
-	p += strlen(p);
-
-	snprintf(p, size - strlen(buff), "\"program_name\": \"%s\", ",
-		log_name);
-	p += strlen(p);
+	size_t len;
 
 	assert(logger_user_info);
-	snprintf(p, size - strlen(buff), "\"port\": %d",
-		logger_user_info->port);
-	p += strlen(p);
 
-	snprintf(p, size - strlen(buff), "},");
-	p += strlen(p);
+	len = snprintf(p, size, "{ \"user_info\": "
+		       "{\"program_name\": \"%s\", \"port\": %d},"
+		       "\"body\": {"
+		       "\"second\": %lu, \"usecond\": %lu, "
+		       "\"worker_name\": \"%s\", \"worker_idx\": %d, "
+		       "\"func\": \"%s\", \"line\": %d, "
+		       "\"msg\": \"",
+		       log_name, logger_user_info->port,
+		       msg->tv.tv_sec, msg->tv.tv_usec,
+		       msg->worker_name[0] ? msg->worker_name : "main",
+		       msg->worker_idx, msg->func, msg->line);
+	if (len < 0)
+		return 0;
+	len = min(len, size - 1);
+	p += len;
+	size -= len;
 
-	snprintf(p, size - strlen(buff), "\"body\": {");
-	p += strlen(p);
+	for (int i = 0; i < msg->str_len; i++) {
+		if (size <= 1)
+			break;
 
-	snprintf(p, size - strlen(buff), "\"second\": %lu", msg->tv.tv_sec);
-	p += strlen(p);
-
-	snprintf(p, size - strlen(buff), ", \"usecond\": %lu", msg->tv.tv_usec);
-	p += strlen(p);
-
-	if (strlen(msg->worker_name))
-		snprintf(p, size - strlen(buff), ", \"worker_name\": \"%s\"",
-			msg->worker_name);
-	else
-		snprintf(p, size - strlen(buff), ", \"worker_name\": \"main\"");
-
-	p += strlen(p);
-
-	snprintf(p, size - strlen(buff), ", \"worker_idx\": %d",
-		msg->worker_idx);
-	p += strlen(p);
-
-	snprintf(p, size - strlen(buff), ", \"func\": \"%s\"", msg->func);
-	p += strlen(p);
-
-	snprintf(p, size - strlen(buff), ", \"line\": %d", msg->line);
-	p += strlen(p);
-
-	snprintf(p, size - strlen(buff), ", \"msg\": \"");
-	p += strlen(p);
-
-	body_len = strlen(msg->str) - 1;
-	/* this - 1 eliminates '\n', dirty... */
-	for (i = 0; i < body_len; i++) {
-		if (msg->str[i] == '"')
+		if (msg->str[i] == '"') {
 			*p++ = '\\';
+			size--;
+		}
+
+		if (size <= 1)
+			break;
 		*p++ = msg->str[i];
+		size--;
 	}
 
-	snprintf(p, size - strlen(buff), "\"} }\n");
+	pstrcpy(p, size, "\"} }");
 	p += strlen(p);
 
 	return p - buff;
@@ -332,19 +319,20 @@ static notrace int json_log_formatter(char *buff, size_t size,
 log_format_register("json", json_log_formatter);
 
 /* this one can block under memory pressure */
-static notrace void log_syslog(const struct logmsg *msg)
+static void log_syslog(const struct logmsg *msg)
 {
 	char str[MAX_MSG_SIZE];
+	int len;
 
-	memset(str, 0, MAX_MSG_SIZE);
-	format->formatter(str, MAX_MSG_SIZE, msg);
+	len = format->formatter(str, sizeof(str) - 1, msg);
+	str[len++] = '\n';
 	if (log_fd >= 0)
-		xwrite(log_fd, str, strlen(str));
+		xwrite(log_fd, str, len);
 	else
 		syslog(msg->prio, "%s", str);
 }
 
-static notrace void init_logmsg(struct logmsg *msg, struct timeval *tv,
+static void init_logmsg(struct logmsg *msg, struct timeval *tv,
 				int prio, const char *func, int line)
 {
 	msg->tv = *tv;
@@ -353,10 +341,12 @@ static notrace void init_logmsg(struct logmsg *msg, struct timeval *tv,
 	msg->line = line;
 	if (worker_name)
 		pstrcpy(msg->worker_name, MAX_THREAD_NAME_LEN, worker_name);
+	else
+		msg->worker_name[0] = '\0';
 	msg->worker_idx = worker_idx;
 }
 
-static notrace void dolog(int prio, const char *func, int line,
+static void dolog(int prio, const char *func, int line,
 		const char *fmt, va_list ap)
 {
 	char buf[sizeof(struct logmsg) + MAX_MSG_SIZE];
@@ -367,10 +357,11 @@ static notrace void dolog(int prio, const char *func, int line,
 
 	gettimeofday(&tv, NULL);
 	len = vsnprintf(str, MAX_MSG_SIZE, fmt, ap);
-	if (len + 1 < MAX_MSG_SIZE && str[len - 1] != '\n') {
-		str[len++] = '\n';
-		str[len] = '\0';
+	if (len < 0) {
+		syslog(LOG_ERR, "vsnprintf failed");
+		return;
 	}
+	msg->str_len = min(len, MAX_MSG_SIZE - 1);
 
 	if (la) {
 		struct sembuf ops;
@@ -392,6 +383,7 @@ static notrace void dolog(int prio, const char *func, int line,
 			msg = (struct logmsg *)la->tail;
 			init_logmsg(msg, &tv, prio, func, line);
 			memcpy(msg->str, str, len + 1);
+			msg->str_len = len;
 			la->tail += sizeof(struct logmsg) + len + 1;
 		}
 
@@ -403,16 +395,15 @@ static notrace void dolog(int prio, const char *func, int line,
 	} else {
 		char str_final[MAX_MSG_SIZE];
 
-		memset(str_final, 0, MAX_MSG_SIZE);
-		memset(msg, 0, sizeof(struct logmsg));
 		init_logmsg(msg, &tv, prio, func, line);
-		len = format->formatter(str_final, MAX_MSG_SIZE, msg);
+		len = format->formatter(str_final, sizeof(str_final) - 1, msg);
+		str_final[len++] = '\n';
 		xwrite(fileno(stderr), str_final, len);
 		fflush(stderr);
 	}
 }
 
-static notrace void rotate_log(void)
+static void rotate_log(void)
 {
 	int new_fd;
 
@@ -441,11 +432,11 @@ static notrace void rotate_log(void)
 	close(new_fd);
 }
 
-notrace void log_write(int prio, const char *func, int line, const char *fmt, ...)
+void log_write(int prio, const char *func, int line, const char *fmt, ...)
 {
 	va_list ap;
 
-	if (prio > log_level)
+	if (prio > sd_log_level)
 		return;
 
 	va_start(ap, fmt);
@@ -453,7 +444,7 @@ notrace void log_write(int prio, const char *func, int line, const char *fmt, ..
 	va_end(ap);
 }
 
-static notrace void log_flush(void)
+static void log_flush(void)
 {
 	struct sembuf ops;
 	size_t size, done = 0;
@@ -484,7 +475,7 @@ static notrace void log_flush(void)
 	while (done < size) {
 		msg = (const struct logmsg *)(log_buff + done);
 		log_syslog(msg);
-		done += sizeof(*msg) + strlen(msg->str) + 1;
+		done += sizeof(*msg) + msg->str_len + 1;
 	}
 }
 
@@ -493,14 +484,13 @@ static bool is_sheep_dead(int signo)
 	return signo == SIGHUP;
 }
 
-static notrace void crash_handler(int signo)
+static void crash_handler(int signo)
 {
 	if (is_sheep_dead(signo))
-		sd_printf(SDOG_ERR, "sheep pid %d exited unexpectedly.",
-			  sheep_pid);
+		sd_err("sheep pid %d exited unexpectedly.", sheep_pid);
 	else {
-		sd_printf(SDOG_ERR, "logger pid %d exits unexpectedly (%s).",
-			  getpid(), strsignal(signo));
+		sd_err("logger pid %d exits unexpectedly (%s).", getpid(),
+		       strsignal(signo));
 		sd_backtrace();
 	}
 
@@ -515,7 +505,7 @@ static notrace void crash_handler(int signo)
 	reraise_crash_signal(signo, 1);
 }
 
-static notrace void logger(char *log_dir, char *outfile)
+static void logger(char *log_dir, char *outfile)
 {
 	int fd;
 
@@ -596,22 +586,22 @@ void early_log_init(const char *format_name, struct logger_user_info *user_info)
 		}
 	}
 
-	fprintf(stderr, "invalid log format: %s\n", format_name);
-	fprintf(stderr, "valid options are:\n");
+	sd_err("invalid log format: %s", format_name);
+	sd_err("valid options are:");
 	list_for_each_entry(f, &log_formats, list) {
-		fprintf(stderr, "\t%s\n", f->name);
+		sd_err("\t%s", f->name);
 	}
 
 	exit(1);
 }
 
-notrace int log_init(const char *program_name, bool to_stdout, int level,
+int log_init(const char *program_name, bool to_stdout, int level,
 		     char *outfile)
 {
 	char log_dir[PATH_MAX], tmp[PATH_MAX];
 	int size = level == SDOG_DEBUG ? LOG_SPACE_DEBUG_SIZE : LOG_SPACE_SIZE;
 
-	log_level = level;
+	sd_log_level = level;
 
 	log_name = program_name;
 	log_nowname = outfile;
@@ -651,7 +641,7 @@ notrace int log_init(const char *program_name, bool to_stdout, int level,
 	return 0;
 }
 
-notrace void log_close(void)
+void log_close(void)
 {
 	if (la) {
 		la->active = false;
@@ -663,22 +653,16 @@ notrace void log_close(void)
 	}
 }
 
-notrace void set_thread_name(const char *name, bool show_idx)
+void set_thread_name(const char *name, bool show_idx)
 {
 	worker_name = name;
 	if (show_idx)
 		worker_idx = gettid();
 }
 
-notrace void get_thread_name(char *name)
+void get_thread_name(char *name)
 {
-	if (worker_name && worker_idx)
-		snprintf(name, MAX_THREAD_NAME_LEN, "%s %d",
-			 worker_name, worker_idx);
-	else if (worker_name)
-		snprintf(name, MAX_THREAD_NAME_LEN, "%s", worker_name);
-	else
-		snprintf(name, MAX_THREAD_NAME_LEN, "%s", "main");
+	format_thread_name(name, MAX_THREAD_NAME_LEN, worker_name, worker_idx);
 }
 
 
@@ -713,14 +697,14 @@ static bool check_gdb(void)
 #define FRAME_POINTER ((unsigned long *)__builtin_frame_address(0) + 2)
 
 __attribute__ ((__noinline__))
-notrace int __sd_dump_variable(const char *var)
+int __sd_dump_variable(const char *var)
 {
 	char cmd[ARG_MAX], path[PATH_MAX], info[256];
 	FILE *f = NULL;
 	void *base_sp = FRAME_POINTER;
 
 	if (!check_gdb()) {
-		sd_dprintf("cannot find gdb");
+		sd_debug("cannot find gdb");
 		return -1;
 	}
 
@@ -732,7 +716,7 @@ notrace int __sd_dump_variable(const char *var)
 		 path, gettid(), base_sp, var);
 	f = popen(cmd, "r");
 	if (f == NULL) {
-		sd_eprintf("failed to run gdb");
+		sd_err("failed to run gdb");
 		return -1;
 	}
 
@@ -744,29 +728,29 @@ notrace int __sd_dump_variable(const char *var)
 	 *    <variable info>
 	 *  }
 	 */
-	sd_printf(SDOG_EMERG, "dump %s", var);
+	sd_emerg("dump %s", var);
 	while (fgets(info, sizeof(info), f) != NULL) {
 		if (info[0] == '$') {
-			sd_printf(SDOG_EMERG, "%s", info);
+			sd_emerg("%s", info);
 			break;
 		}
 	}
 	while (fgets(info, sizeof(info), f) != NULL)
-		sd_printf(SDOG_EMERG, "%s", info);
+		sd_emerg("%s", info);
 
 	pclose(f);
 	return 0;
 }
 
 __attribute__ ((__noinline__))
-static notrace int dump_stack_frames(void)
+static int dump_stack_frames(void)
 {
 	char path[PATH_MAX];
 	int i, stack_no = 0;
 	void *base_sp = FRAME_POINTER;
 
 	if (!check_gdb()) {
-		sd_dprintf("cannot find gdb");
+		sd_debug("cannot find gdb");
 		return -1;
 	}
 
@@ -803,21 +787,21 @@ static notrace int dump_stack_frames(void)
 				}
 				stack_no = no;
 				found = true;
-				sd_printf(SDOG_EMERG, "%s", info);
+				sd_emerg("%s", info);
 				break;
 			}
 		}
 
 		if (!found) {
-			sd_iprintf("Cannot get info from GDB");
-			sd_iprintf("Set /proc/sys/kernel/yama/ptrace_scope to"
-				   " zero if you are using Ubuntu.");
+			sd_info("Cannot get info from GDB");
+			sd_info("Set /proc/sys/kernel/yama/ptrace_scope to"
+				" zero if you are using Ubuntu.");
 			pclose(f);
 			return -1;
 		}
 
 		while (fgets(info, sizeof(info), f) != NULL)
-			sd_printf(SDOG_EMERG, "%s", info);
+			sd_emerg("%s", info);
 
 		pclose(f);
 	}
@@ -826,7 +810,7 @@ static notrace int dump_stack_frames(void)
 }
 
 __attribute__ ((__noinline__))
-notrace void sd_backtrace(void)
+void sd_backtrace(void)
 {
 	void *addrs[SD_MAX_STACK_DEPTH];
 	int i, n = backtrace(addrs, ARRAY_SIZE(addrs));
@@ -856,7 +840,7 @@ notrace void sd_backtrace(void)
 			goto fallback_close;
 
 		if (info[0] != '?' && info[0] != '\0')
-			sd_printf(SDOG_EMERG, "%s", info);
+			sd_emerg("%s", info);
 		else
 			goto fallback_close;
 
@@ -870,7 +854,7 @@ fallback_close:
 		pclose(f);
 fallback:
 		str = backtrace_symbols(&addr, 1);
-		sd_printf(SDOG_EMERG, "%s", *str);
+		sd_emerg("%s", *str);
 		free(str);
 	}
 

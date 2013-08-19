@@ -9,7 +9,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "collie.h"
+#include "dog.h"
 #include "sha1.h"
 #include "sockfd_cache.h"
 
@@ -54,15 +54,15 @@ int sd_read_object(uint64_t oid, void *data, unsigned int datalen,
 	if (direct)
 		hdr.flags |= SD_FLAG_CMD_DIRECT;
 
-	ret = collie_exec_req(sdhost, sdport, &hdr, data);
+	ret = dog_exec_req(sdhost, sdport, &hdr, data);
 	if (ret < 0) {
-		fprintf(stderr, "Failed to read object %" PRIx64 "\n", oid);
+		sd_err("Failed to read object %" PRIx64, oid);
 		return SD_RES_EIO;
 	}
 
 	if (rsp->result != SD_RES_SUCCESS) {
-		fprintf(stderr, "Failed to read object %" PRIx64 " %s\n", oid,
-			sd_strerror(rsp->result));
+		sd_err("Failed to read object %" PRIx64 " %s", oid,
+		       sd_strerror(rsp->result));
 		return rsp->result;
 	}
 
@@ -96,24 +96,21 @@ int sd_write_object(uint64_t oid, uint64_t cow_oid, void *data,
 	hdr.obj.cow_oid = cow_oid;
 	hdr.obj.offset = offset;
 
-	ret = collie_exec_req(sdhost, sdport, &hdr, data);
+	ret = dog_exec_req(sdhost, sdport, &hdr, data);
 	if (ret < 0) {
-		fprintf(stderr, "Failed to write object %" PRIx64 "\n", oid);
+		sd_err("Failed to write object %" PRIx64, oid);
 		return SD_RES_EIO;
 	}
 	if (rsp->result != SD_RES_SUCCESS) {
-		fprintf(stderr, "Failed to write object %" PRIx64 ": %s\n", oid,
-				sd_strerror(rsp->result));
+		sd_err("Failed to write object %" PRIx64 ": %s", oid,
+		       sd_strerror(rsp->result));
 		return rsp->result;
 	}
 
 	return SD_RES_SUCCESS;
 }
 
-#define FOR_EACH_VDI(nr, vdis)					\
-	for (nr = find_next_bit((vdis), SD_NR_VDIS, 0);		\
-	     nr < SD_NR_VDIS;					\
-	     nr = find_next_bit((vdis), SD_NR_VDIS, nr + 1))
+#define FOR_EACH_VDI(nr, vdis) FOR_EACH_BIT(nr, vdis, SD_NR_VDIS)
 
 int parse_vdi(vdi_parser_func_t func, size_t size, void *data)
 {
@@ -127,7 +124,7 @@ int parse_vdi(vdi_parser_func_t func, size_t size, void *data)
 	sd_init_req(&req, SD_OP_READ_VDIS);
 	req.data_length = sizeof(vdi_inuse);
 
-	ret = collie_exec_req(sdhost, sdport, &req, &vdi_inuse);
+	ret = dog_exec_req(sdhost, sdport, &req, &vdi_inuse);
 	if (ret < 0)
 		goto out;
 
@@ -140,7 +137,7 @@ int parse_vdi(vdi_parser_func_t func, size_t size, void *data)
 		memset(&i, 0, sizeof(i));
 		ret = sd_read_object(oid, &i, SD_INODE_HEADER_SIZE, 0, true);
 		if (ret != SD_RES_SUCCESS) {
-			fprintf(stderr, "Failed to read inode header\n");
+			sd_err("Failed to read inode header");
 			continue;
 		}
 
@@ -157,7 +154,7 @@ int parse_vdi(vdi_parser_func_t func, size_t size, void *data)
 					     rlen, SD_INODE_HEADER_SIZE, true);
 
 			if (ret != SD_RES_SUCCESS) {
-				fprintf(stderr, "Failed to read inode\n");
+				sd_err("Failed to read inode");
 				continue;
 			}
 		}
@@ -170,14 +167,14 @@ out:
 	return ret;
 }
 
-int collie_exec_req(const char *host, int port, struct sd_req *hdr, void *buf)
+int dog_exec_req(const uint8_t *addr, int port, struct sd_req *hdr,
+		    void *buf)
 {
-	struct node_id nid;
+	struct node_id nid = {};
 	struct sockfd *sfd;
 	int ret;
 
-	memset(&nid, 0, sizeof(nid));
-	str_to_addr(host, nid.addr);
+	memcpy(nid.addr, addr, sizeof(nid.addr));
 	nid.port = port;
 
 	sfd = sockfd_cache_get(&nid);
@@ -185,7 +182,7 @@ int collie_exec_req(const char *host, int port, struct sd_req *hdr, void *buf)
 		return -1;
 
 	/*
-	 * Retry forever for collie because
+	 * Retry forever for dog because
 	 * 1. We can't get the newest epoch
 	 * 2. Some operations might take unexpected long time
 	 */
@@ -197,16 +194,15 @@ int collie_exec_req(const char *host, int port, struct sd_req *hdr, void *buf)
 }
 
 /* Light request only contains header, without body content. */
-int send_light_req(struct sd_req *hdr, const char *host, int port)
+int send_light_req(struct sd_req *hdr, const uint8_t *addr, int port)
 {
-	int ret = collie_exec_req(host, port, hdr, NULL);
+	int ret = dog_exec_req(addr, port, hdr, NULL);
 
 	if (ret == -1)
 		return -1;
 
 	if (ret != SD_RES_SUCCESS) {
-		fprintf(stderr, "Response's result: %s\n",
-			sd_strerror(ret));
+		sd_err("Response's result: %s", sd_strerror(ret));
 		return -1;
 	}
 
@@ -221,17 +217,15 @@ int do_generic_subcommand(struct subcommand *sub, int argc, char **argv)
 		if (!strcmp(sub[i].name, argv[optind])) {
 			unsigned long flags = sub[i].flags;
 
-			if (flags & SUBCMD_FLAG_NEED_NODELIST) {
+			if (flags & CMD_NEED_NODELIST) {
 				ret = update_node_list(SD_MAX_NODES);
 				if (ret < 0) {
-					fprintf(stderr,
-						"Failed to get node list\n");
+					sd_err("Failed to get node list");
 					exit(EXIT_SYSFAIL);
 				}
 			}
 
-			if (flags & SUBCMD_FLAG_NEED_ARG
-			    && argc < 5)
+			if (flags & CMD_NEED_ARG && argc < 5)
 				subcommand_usage(argv[1], argv[2], EXIT_USAGE);
 			optind++;
 			ret = sub[i].fn(argc, argv);

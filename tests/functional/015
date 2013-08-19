@@ -2,18 +2,7 @@
 
 # Test vdi setattr/getattr failure mode
 
-seq=`basename $0`
-echo "QA output created by $seq"
-
-here=`pwd`
-tmp=/tmp/$$
-status=1        # failure is the default!
-
-# get standard environment, filters and checks
-. ./common.rc
-. ./common.filter
-
-_cleanup
+. ./common
 
 for i in 0 2; do
     _start_sheep $i
@@ -23,38 +12,38 @@ _wait_for_sheep 2
 
 _cluster_format -c 2
 
-$COLLIE vdi create test 539545600
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
+$DOG vdi create test 539545600
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
 wait
 echo "there should be 3 setattr errors"
 
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
 wait
 echo "there should be 8 setattr errors"
 
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
 wait
 echo "there should be 6 setattr errors"
 
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
-$COLLIE vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
+$DOG vdi setattr test lock 1 -x &
 wait
 echo "there should be 5 setattr errors"

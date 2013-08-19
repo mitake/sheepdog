@@ -43,6 +43,25 @@
 #include "config.h"
 #include "sockfd_cache.h"
 
+ /*
+  * Functions that update global info must be called in the main
+  * thread.  Add main_fn markers to such functions.
+  *
+  * Functions that can sleep (e.g. disk I/Os or network I/Os) must be
+  * called in the worker threads.  Add worker_fn markers to such
+  * functions.
+  */
+#ifdef HAVE_TRACE
+#define MAIN_FN_SECTION ".sd_main"
+#define WORKER_FN_SECTION ".sd_worker"
+
+#define main_fn __attribute__((section(MAIN_FN_SECTION)))
+#define worker_fn __attribute__((section(WORKER_FN_SECTION)))
+#else
+#define main_fn
+#define worker_fn
+#endif
+
 struct client_info {
 	struct connection conn;
 
@@ -393,6 +412,7 @@ int object_cache_flush_and_del(const struct request *req);
 void object_cache_delete(uint32_t vid);
 int object_cache_init(const char *p);
 int object_cache_remove(uint64_t oid);
+int object_cache_get_info(struct object_cache_info *info);
 
 /* store layout migration */
 int sd_migrate_store(int from, int to);
@@ -428,7 +448,7 @@ int http_init(const char *address);
 #else
 static inline int http_init(const char *address)
 {
-	sd_printf(SDOG_NOTICE, "http service is not complied");
+	sd_notice("http service is not complied");
 	return 0;
 }
 #endif /* END BUILD_HTTP */

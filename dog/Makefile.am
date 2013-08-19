@@ -21,36 +21,42 @@ AM_CFLAGS		=
 
 INCLUDES		= -I$(top_builddir)/include -I$(top_srcdir)/include
 
-sbin_PROGRAMS		= collie
+sbin_PROGRAMS		= dog
 
-collie_SOURCES		= farm/object_tree.c farm/sha1_file.c farm/snap.c \
+dog_SOURCES		= farm/object_tree.c farm/sha1_file.c farm/snap.c \
 			  farm/trunk.c farm/farm.c farm/slice.c \
-			  collie.c common.c treeview.c vdi.c node.c cluster.c
+			  dog.c common.c treeview.c vdi.c node.c cluster.c
 
 if BUILD_TRACE
-collie_SOURCES          += debug.c
-override CFLAGS         := $(subst -pg -gstabs,,$(CFLAGS))
+dog_SOURCES		+= trace.c
+override CFLAGS         := $(subst -pg,,$(CFLAGS))
 endif
 
-collie_LDADD		= ../lib/libsheepdog.a -lpthread
-collie_DEPENDENCIES	= ../lib/libsheepdog.a
+dog_LDADD		= ../lib/libsheepdog.a -lpthread
+dog_DEPENDENCIES	= ../lib/libsheepdog.a
 
-noinst_HEADERS		= treeview.h collie.h farm/farm.h
+noinst_HEADERS		= treeview.h dog.h farm/farm.h
 
 EXTRA_DIST		=
 
+install-exec-hook:
+	if [ -z "${DESTDIR}" ];then $(LN_S) -f ${sbindir}/dog ${sbindir}/collie;fi
+
+uninstall-hook:
+	rm -f ${sbindir}/collie
+
 all-local:
-	@echo Built collie
+	@echo Built dog
 
 clean-local:
-	rm -f collie *.o gmon.out *.da *.bb *.bbg
+	rm -f dog *.o gmon.out *.da *.bb *.bbg
 
 # support for GNU Flymake
 check-syntax:
 	$(COMPILE) -fsyntax-only $(CHK_SOURCES)
 
 check-style:
-	@$(CHECK_STYLE) $(collie_SOURCES) $(noinst_HEADERS)
+	@$(CHECK_STYLE) $(dog_SOURCES) $(noinst_HEADERS)
 
 coverage:
-	@lcov -d . -c -o collie.info
+	@lcov -d . -c -o dog.info

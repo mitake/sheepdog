@@ -2,18 +2,7 @@
 
 # Test data integrity after joining a new node
 
-seq=`basename $0`
-echo "QA output created by $seq"
-
-here=`pwd`
-tmp=/tmp/$$
-status=1        # failure is the default!
-
-# get standard environment, filters and checks
-. ./common.rc
-. ./common.filter
-
-_cleanup
+. ./common
 
 # start three sheep daemons
 for i in 0 1 2; do
@@ -25,13 +14,13 @@ _wait_for_sheep 3
 _cluster_format -c 2
 
 # create a pre-allocated vdi
-$COLLIE vdi create test 80M -P
+$DOG vdi create test 80M -P
 
 # stop the 3rd node
 _kill_sheep 2
 
 # write data to the vdi
-_random | $COLLIE vdi write test
+_random | $DOG vdi write test
 
 # restart the 3rd node
 _start_sheep 2
@@ -40,7 +29,7 @@ _wait_for_sheep_recovery 0
 
 # show md5sum of the vdi on each node
 for i in 0 1 2; do
-    $COLLIE vdi read test -p 700$i | md5sum > $STORE/csum.$i
+    $DOG vdi read test -p 700$i | md5sum > $STORE/csum.$i
 done
 
 diff -u $STORE/csum.0 $STORE/csum.1

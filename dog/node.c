@@ -9,7 +9,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "collie.h"
+#include "dog.h"
 
 static struct node_cmd_data {
 	bool all_nodes;
@@ -31,25 +31,13 @@ static int node_list(int argc, char **argv)
 	int i;
 
 	if (!raw_output)
-		printf("M   Id   Host:Port         V-Nodes       Zone\n");
+		printf("  Id   Host:Port         V-Nodes       Zone\n");
 	for (i = 0; i < sd_nodes_nr; i++) {
-		char data[128];
+		const char *host = addr_to_str(sd_nodes[i].nid.addr,
+					       sd_nodes[i].nid.port);
 
-		addr_to_str(data, sizeof(data), sd_nodes[i].nid.addr,
-			    sd_nodes[i].nid.port);
-
-		if (i == master_idx) {
-			if (highlight)
-				printf(TEXT_BOLD);
-			printf(raw_output ? "* %d %s %d %d\n" : "* %4d   %-20s\t%2d%11d\n",
-			       i, data, sd_nodes[i].nr_vnodes,
-			       sd_nodes[i].zone);
-			if (highlight)
-				printf(TEXT_NORMAL);
-		} else
-			printf(raw_output ? "- %d %s %d %d\n" : "- %4d   %-20s\t%2d%11d\n",
-			       i, data, sd_nodes[i].nr_vnodes,
-			       sd_nodes[i].zone);
+		printf(raw_output ? "%d %s %d %u\n" : "%4d   %-20s\t%2d%11u\n",
+		       i, host, sd_nodes[i].nr_vnodes, sd_nodes[i].zone);
 	}
 
 	return EXIT_SUCCESS;
@@ -66,18 +54,16 @@ static int node_info(int argc, char **argv)
 		printf("Id\tSize\tUsed\tAvail\tUse%%\n");
 
 	for (i = 0; i < sd_nodes_nr; i++) {
-		char host[128];
 		struct sd_req req;
 		struct sd_rsp *rsp = (struct sd_rsp *)&req;
 		char store_str[UINT64_DECIMAL_SIZE],
 		     used_str[UINT64_DECIMAL_SIZE],
 		     free_str[UINT64_DECIMAL_SIZE];
 
-		addr_to_str(host, sizeof(host), sd_nodes[i].nid.addr, 0);
-
 		sd_init_req(&req, SD_OP_STAT_SHEEP);
 
-		ret = send_light_req(&req, host, sd_nodes[i].nid.port);
+		ret = send_light_req(&req, sd_nodes[i].nid.addr,
+				     sd_nodes[i].nid.port);
 
 		size_to_str(rsp->node.store_size, store_str, sizeof(store_str));
 		size_to_str(rsp->node.store_free, free_str, sizeof(free_str));
@@ -99,7 +85,7 @@ static int node_info(int argc, char **argv)
 	}
 
 	if (success == 0) {
-		fprintf(stderr, "Cannot get information from any nodes\n");
+		sd_err("Cannot get information from any nodes");
 		return EXIT_SYSFAIL;
 	}
 
@@ -129,9 +115,9 @@ static int get_recovery_state(struct recovery_state *state)
 	sd_init_req(&req, SD_OP_STAT_RECOVERY);
 	req.data_length = sizeof(*state);
 
-	ret = collie_exec_req(sdhost, sdport, &req, state);
+	ret = dog_exec_req(sdhost, sdport, &req, state);
 	if (ret < 0) {
-		fprintf(stderr, "Failed to execute request\n");
+		sd_err("Failed to execute request");
 		return -1;
 	}
 
@@ -211,23 +197,22 @@ static int node_recovery(int argc, char **argv)
 	}
 
 	for (i = 0; i < sd_nodes_nr; i++) {
-		char host[128];
 		struct sd_req req;
 		struct recovery_state state;
 
 		memset(&state, 0, sizeof(state));
-		addr_to_str(host, sizeof(host), sd_nodes[i].nid.addr, 0);
 
 		sd_init_req(&req, SD_OP_STAT_RECOVERY);
 		req.data_length = sizeof(state);
 
-		ret = collie_exec_req(host, sd_nodes[i].nid.port, &req, &state);
+		ret = dog_exec_req(sd_nodes[i].nid.addr,
+				      sd_nodes[i].nid.port, &req, &state);
 		if (ret < 0)
 			return EXIT_SYSFAIL;
 
 		if (state.in_recovery) {
-			addr_to_str(host, sizeof(host),
-					sd_nodes[i].nid.addr, sd_nodes[i].nid.port);
+			const char *host = addr_to_str(sd_nodes[i].nid.addr,
+						       sd_nodes[i].nid.port);
 			if (raw_output)
 				printf("%d %s %d %d %"PRIu64" %"PRIu64"\n", i,
 				       host, sd_nodes[i].nr_vnodes,
@@ -246,30 +231,28 @@ static int node_recovery(int argc, char **argv)
 
 static int node_kill(int argc, char **argv)
 {
-	char host[128];
 	int node_id, ret;
 	struct sd_req req;
 	const char *p = argv[optind++];
 
 	if (!is_numeric(p)) {
-		fprintf(stderr, "Invalid node id '%s', "
-			"please specify a numeric value\n", p);
+		sd_err("Invalid node id '%s', please specify a numeric value",
+		       p);
 		exit(EXIT_USAGE);
 	}
 
 	node_id = strtol(p, NULL, 10);
 	if (node_id < 0 || node_id >= sd_nodes_nr) {
-		fprintf(stderr, "Invalid node id '%d'\n", node_id);
+		sd_err("Invalid node id '%d'", node_id);
 		exit(EXIT_USAGE);
 	}
 
-	addr_to_str(host, sizeof(host), sd_nodes[node_id].nid.addr, 0);
-
 	sd_init_req(&req, SD_OP_KILL_NODE);
 
-	ret = send_light_req(&req, host, sd_nodes[node_id].nid.port);
+	ret = send_light_req(&req, sd_nodes[node_id].nid.addr,
+			     sd_nodes[node_id].nid.port);
 	if (ret) {
-		fprintf(stderr, "Failed to execute request\n");
+		sd_err("Failed to execute request");
 		exit(EXIT_FAILURE);
 	}
 
@@ -284,19 +267,17 @@ static int node_md_info(struct node_id *nid)
 	struct sd_req hdr;
 	struct sd_rsp *rsp = (struct sd_rsp *)&hdr;
 	int ret, i;
-	char host[HOST_NAME_MAX];
 
 	sd_init_req(&hdr, SD_OP_MD_INFO);
 	hdr.data_length = sizeof(info);
 
-	addr_to_str(host, sizeof(host), nid->addr, 0);
-	ret = collie_exec_req(host, nid->port, &hdr, &info);
+	ret = dog_exec_req(nid->addr, nid->port, &hdr, &info);
 	if (ret < 0)
 		return EXIT_SYSFAIL;
 
 	if (rsp->result != SD_RES_SUCCESS) {
-		fprintf(stderr, "failed to get multi-disk infomation: %s\n",
-			sd_strerror(rsp->result));
+		sd_err("failed to get multi-disk infomation: %s",
+		       sd_strerror(rsp->result));
 		return EXIT_FAILURE;
 	}
 
@@ -323,10 +304,7 @@ static int md_info(int argc, char **argv)
 	if (!node_cmd_data.all_nodes) {
 		struct node_id nid = {.port = sdport};
 
-		if (!str_to_addr(sdhost, nid.addr)) {
-			fprintf(stderr, "Invalid address %s\n", sdhost);
-			return EXIT_FAILURE;
-		}
+		memcpy(nid.addr, sdhost, sizeof(nid.addr));
 
 		return node_md_info(&nid);
 	}
@@ -347,7 +325,7 @@ static int do_plug_unplug(char *disks, bool plug)
 	int ret;
 
 	if (!strlen(disks)) {
-		fprintf(stderr, "Empty path isn't allowed\n");
+		sd_err("Empty path isn't allowed");
 		return EXIT_FAILURE;
 	}
 
@@ -358,13 +336,13 @@ static int do_plug_unplug(char *disks, bool plug)
 	hdr.flags = SD_FLAG_CMD_WRITE;
 	hdr.data_length = strlen(disks) + 1;
 
-	ret = collie_exec_req(sdhost, sdport, &hdr, disks);
+	ret = dog_exec_req(sdhost, sdport, &hdr, disks);
 	if (ret < 0)
 		return EXIT_SYSFAIL;
 
 	if (rsp->result != SD_RES_SUCCESS) {
-		fprintf(stderr, "Failed to execute request, look for sheep.log"
-			" for more information\n");
+		sd_err("Failed to execute request, look for sheep.log"
+		       " for more information");
 		return EXIT_FAILURE;
 	}
 
@@ -383,11 +361,11 @@ static int md_unplug(int argc, char **argv)
 
 static struct subcommand node_md_cmd[] = {
 	{"info", NULL, NULL, "show multi-disk information",
-	 NULL, SUBCMD_FLAG_NEED_NODELIST, md_info},
+	 NULL, CMD_NEED_NODELIST, md_info},
 	{"plug", NULL, NULL, "plug more disk(s) into node",
-	 NULL, SUBCMD_FLAG_NEED_ARG, md_plug},
+	 NULL, CMD_NEED_ARG, md_plug},
 	{"unplug", NULL, NULL, "unplug disk(s) from node",
-	 NULL, SUBCMD_FLAG_NEED_ARG, md_unplug},
+	 NULL, CMD_NEED_ARG, md_unplug},
 	{NULL},
 };
 
@@ -420,15 +398,15 @@ static struct sd_option node_options[] = {
 
 static struct subcommand node_cmd[] = {
 	{"kill", "<node id>", "aprh", "kill node", NULL,
-	 SUBCMD_FLAG_NEED_ARG | SUBCMD_FLAG_NEED_NODELIST, node_kill},
+	 CMD_NEED_ARG | CMD_NEED_NODELIST, node_kill},
 	{"list", NULL, "aprh", "list nodes", NULL,
-	 SUBCMD_FLAG_NEED_NODELIST, node_list},
+	 CMD_NEED_NODELIST, node_list},
 	{"info", NULL, "aprh", "show information about each node", NULL,
-	 SUBCMD_FLAG_NEED_NODELIST, node_info},
+	 CMD_NEED_NODELIST, node_info},
 	{"recovery", NULL, "aphPr", "show recovery information of nodes", NULL,
-	 SUBCMD_FLAG_NEED_NODELIST, node_recovery, node_options},
-	{"md", "[disks]", "apAh", "See 'collie node md' for more information",
-	 node_md_cmd, SUBCMD_FLAG_NEED_ARG, node_md, node_options},
+	 CMD_NEED_NODELIST, node_recovery, node_options},
+	{"md", "[disks]", "apAh", "See 'dog node md' for more information",
+	 node_md_cmd, CMD_NEED_ARG, node_md, node_options},
 	{NULL,},
 };
 

@@ -2,18 +2,7 @@
 
 # Test vdi clone functionality
 
-seq=`basename $0`
-echo "QA output created by $seq"
-
-here=`pwd`
-tmp=/tmp/$$
-status=1        # failure is the default!
-
-# get standard environment, filters and checks
-. ./common.rc
-. ./common.filter
-
-_cleanup
+. ./common
 
 for i in 0 1 2; do
     _start_sheep $i
@@ -22,27 +11,27 @@ done
 _wait_for_sheep 3
 
 _cluster_format -c 3
-$COLLIE vdi create base 100M -P
+$DOG vdi create base 100M -P
 
-qemu-img snapshot -c tag sheepdog:base
-
-sleep 1
-
-$COLLIE vdi clone -s 1 base test
+$QEMU_IMG snapshot -c tag sheepdog:base
 
 sleep 1
 
-$COLLIE vdi delete test
+$DOG vdi clone -s 1 base test
 
 sleep 1
-$COLLIE vdi delete base
+
+$DOG vdi delete test
 
 sleep 1
-$COLLIE vdi delete -s 1 base
+$DOG vdi delete base
+
+sleep 1
+$DOG vdi delete -s 1 base
 
 sleep 3
 echo there should be no vdi
-$COLLIE vdi list
+_vdi_list
 
 echo there should be no object
 _node_info

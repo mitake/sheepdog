@@ -2,18 +2,7 @@
 
 # Test vdi object recovery just after vdi creation
 
-seq=`basename $0`
-echo "QA output created by $seq"
-
-here=`pwd`
-tmp=/tmp/$$
-status=1        # failure is the default!
-
-# get standard environment, filters and checks
-. ./common.rc
-. ./common.filter
-
-_cleanup
+. ./common
 
 _start_sheep 0
 _wait_for_sheep 1
@@ -21,7 +10,7 @@ _wait_for_sheep 1
 _cluster_format -c 1
 
 # create vdi in background
-$COLLIE vdi create test 4G &
+$DOG vdi create test 4G &
 
 # the created vdi object will be move from sheep 0 to sheep 1
 _start_sheep 1
@@ -30,5 +19,5 @@ _start_sheep 1
 wait $!
 _wait_for_sheep 2
 
-$COLLIE vdi list -p 7000 | _filter_short_date
-$COLLIE vdi list -p 7001 | _filter_short_date
+_vdi_list -p 7000
+_vdi_list -p 7001

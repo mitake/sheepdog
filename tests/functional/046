@@ -2,18 +2,7 @@
 
 # Test vdi deletion
 
-seq=`basename $0`
-echo "QA output created by $seq"
-
-here=`pwd`
-tmp=/tmp/$$
-status=1        # failure is the default!
-
-# get standard environment, filters and checks
-. ./common.rc
-. ./common.filter
-
-_cleanup
+. ./common
 
 for i in 0 1 2; do
     _start_sheep $i
@@ -24,27 +13,27 @@ _wait_for_sheep 3
 _cluster_format -c 2
 
 echo "delete snapshot image before current one"
-$COLLIE vdi create test 4G
-$COLLIE vdi snapshot test -s snap
-$COLLIE vdi list | _filter_short_date
+$DOG vdi create test 4G
+$DOG vdi snapshot test -s snap
+_vdi_list
 
-$COLLIE vdi delete test -s snap
-$COLLIE vdi delete test -s snap # error
-$COLLIE vdi list | _filter_short_date
+$DOG vdi delete test -s snap
+$DOG vdi delete test -s snap # error
+_vdi_list
 
-$COLLIE vdi delete test
-$COLLIE vdi delete test # error
-$COLLIE vdi list | _filter_short_date
+$DOG vdi delete test
+$DOG vdi delete test # error
+_vdi_list
 
 echo "delete current image before snapshot one"
-$COLLIE vdi create test 4G
-$COLLIE vdi snapshot test -s snap
-$COLLIE vdi list | _filter_short_date
+$DOG vdi create test 4G
+$DOG vdi snapshot test -s snap
+_vdi_list
 
-$COLLIE vdi delete test
-$COLLIE vdi delete test # error
-$COLLIE vdi list | _filter_short_date
+$DOG vdi delete test
+$DOG vdi delete test # error
+_vdi_list
 
-$COLLIE vdi delete test -s snap
-$COLLIE vdi delete test -s snap # error
-$COLLIE vdi list | _filter_short_date
+$DOG vdi delete test -s snap
+$DOG vdi delete test -s snap # error
+_vdi_list

@@ -2,18 +2,7 @@
 
 # Test gateway only functionality
 
-seq=`basename $0`
-echo "QA output created by $seq"
-
-here=`pwd`
-tmp=/tmp/$$
-status=1        # failure is the default!
-
-# get standard environment, filters and checks
-. ./common.rc
-. ./common.filter
-
-_cleanup
+. ./common
 
 for i in 0 1 2; do
     _start_sheep $i
@@ -27,4 +16,4 @@ _start_sheep 4 "-g"
 _wait_for_sheep 4
 
 echo check the number of vnodes
-$COLLIE node list
+$DOG node list

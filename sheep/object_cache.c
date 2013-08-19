@@ -54,6 +54,7 @@ struct object_cache {
 	uint32_t vid; /* The VID of this VDI */
 	uint32_t push_count; /* How many push threads queued in push phase. */
 	uint32_t dirty_count; /* How many dirty object in this cache */
+	uint32_t total_count; /* Count of objects include dirty and clean */
 	struct hlist_node hash; /* VDI is linked to the global hash lists */
 	struct rb_root lru_tree; /* For faster object search */
 	struct list_head lru_head; /* Per VDI LRU list for reclaimer */
@@ -298,6 +299,7 @@ free_cache_entry(struct object_cache_entry *entry)
 
 	rb_erase(&entry->node, &oc->lru_tree);
 	list_del_init(&entry->lru_list);
+	oc->total_count--;
 	if (!list_empty(&entry->dirty_list))
 		del_from_dirty_list(entry);
 	sd_destroy_lock(&entry->lock);
@@ -319,9 +321,9 @@ static int remove_cache_object(struct object_cache *oc, uint32_t idx)
 
 	snprintf(path, sizeof(path), "%s/%06"PRIx32"/%08"PRIx32,
 		 object_cache_dir, oc->vid, idx);
-	sd_dprintf("%"PRIx64, idx_to_oid(oc->vid, idx));
-	if (unlink(path) < 0) {
-		sd_eprintf("failed to remove cached object %m");
+	sd_debug("%"PRIx64, idx_to_oid(oc->vid, idx));
+	if (unlikely(unlink(path) < 0)) {
+		sd_err("failed to remove cached object %m");
 		if (errno == ENOENT)
 			return SD_RES_SUCCESS;
 		ret = SD_RES_EIO;
@@ -347,17 +349,17 @@ static int read_cache_object_noupdate(uint32_t vid, uint32_t idx, void *buf,
 	}
 
 	fd = open(p, flags, sd_def_fmode);
-	if (fd < 0) {
-		sd_eprintf("%m");
+	if (unlikely(fd < 0)) {
+		sd_err("%m");
 		ret = SD_RES_EIO;
 		goto out;
 	}
 
 	size = xpread(fd, buf, count, offset);
 
-	if (size != count) {
-		sd_eprintf("size %zu, count:%zu, offset %jd %m", size, count,
-			   (intmax_t)offset);
+	if (unlikely(size != count)) {
+		sd_err("size %zu, count:%zu, offset %jd %m", size, count,
+		       (intmax_t)offset);
 		ret = SD_RES_EIO;
 		goto out_close;
 	}
@@ -383,17 +385,17 @@ static int write_cache_object_noupdate(uint32_t vid, uint32_t idx, void *buf,
 	}
 
 	fd = open(p, flags, sd_def_fmode);
-	if (fd < 0) {
-		sd_eprintf("%m");
+	if (unlikely(fd < 0)) {
+		sd_err("%m");
 		ret = SD_RES_EIO;
 		goto out;
 	}
 
 	size = xpwrite(fd, buf, count, offset);
 
-	if (size != count) {
-		sd_eprintf("size %zu, count:%zu, offset %jd %m", size, count,
-			   (intmax_t)offset);
+	if (unlikely(size != count)) {
+		sd_err("size %zu, count:%zu, offset %jd %m", size, count,
+		       (intmax_t)offset);
 		ret = SD_RES_EIO;
 		goto out_close;
 	}
@@ -464,8 +466,8 @@ static int write_cache_object(struct object_cache_entry *entry, void *buf,
 
 	ret = exec_local_req(&hdr, buf);
 	if (ret != SD_RES_SUCCESS) {
-		sd_eprintf("failed to write object %" PRIx64 ", %s", oid,
-			   sd_strerror(ret));
+		sd_err("failed to write object %" PRIx64 ", %s", oid,
+		       sd_strerror(ret));
 		return ret;
 	}
 out:
@@ -484,15 +486,15 @@ static int push_cache_object(uint32_t vid, uint32_t idx, uint64_t bmap,
 	int first_bit, last_bit;
 
 	if (!bmap) {
-		sd_dprintf("WARN: nothing to flush %"PRIx64, oid);
+		sd_debug("WARN: nothing to flush %"PRIx64, oid);
 		return SD_RES_SUCCESS;
 	}
 
 	first_bit = ffsll(bmap) - 1;
 	last_bit = fls64(bmap) - 1;
 
-	sd_dprintf("%"PRIx64" bmap(%zd):0x%"PRIx64", first_bit:%d, last_bit:%d",
-		   oid, bsize, bmap, first_bit, last_bit);
+	sd_debug("%"PRIx64" bmap(%zd):0x%"PRIx64", first_bit:%d, last_bit:%d",
+		 oid, bsize, bmap, first_bit, last_bit);
 	offset = first_bit * bsize;
 	data_length = min((last_bit - first_bit + 1) * bsize,
 			  get_objsize(oid) - offset);
@@ -513,8 +515,8 @@ static int push_cache_object(uint32_t vid, uint32_t idx, uint64_t bmap,
 
 	ret = exec_local_req(&hdr, buf);
 	if (ret != SD_RES_SUCCESS)
-		sd_eprintf("failed to push object %"PRIx64", %s",
-			   oid, sd_strerror(ret));
+		sd_err("failed to push object %" PRIx64 ", %s", oid,
+		       sd_strerror(ret));
 out:
 	free(buf);
 	return ret;
@@ -544,7 +546,7 @@ static void do_reclaim_object(struct object_cache *oc)
 	list_for_each_entry_safe(entry, t, &oc->lru_head, lru_list) {
 		oid = idx_to_oid(oc->vid, entry_idx(entry));
 		if (entry_in_use(entry)) {
-			sd_dprintf("%"PRIx64" is in use, skip...", oid);
+			sd_debug("%"PRIx64" is in use, skip...", oid);
 			continue;
 		}
 
@@ -555,14 +557,14 @@ static void do_reclaim_object(struct object_cache *oc)
 		 * can reclaim them safely.
 		 */
 		if (entry_is_dirty(entry) && !oid_is_readonly(oid)) {
-			sd_dprintf("%"PRIx64" is dirty, skip...", oid);
+			sd_debug("%"PRIx64" is dirty, skip...", oid);
 			continue;
 		}
 		if (remove_cache_object(oc, entry_idx(entry)) != SD_RES_SUCCESS)
 			continue;
 		free_cache_entry(entry);
 		cap = uatomic_sub_return(&gcache.capacity, CACHE_OBJECT_SIZE);
-		sd_dprintf("%"PRIx64" reclaimed. capacity:%"PRId32, oid, cap);
+		sd_debug("%"PRIx64" reclaimed. capacity:%"PRId32, oid, cap);
 		if (cap <= HIGH_WATERMARK)
 			break;
 	}
@@ -597,13 +599,13 @@ static void do_reclaim(struct work *work)
 			cap = uatomic_read(&gcache.capacity);
 			if (cap <= HIGH_WATERMARK) {
 				sd_unlock(&hashtable_lock[idx]);
-				sd_dprintf("complete, capacity %"PRIu32, cap);
+				sd_debug("complete, capacity %"PRIu32, cap);
 				return;
 			}
 		}
 		sd_unlock(&hashtable_lock[idx]);
 	}
-	sd_dprintf("finished");
+	sd_debug("finished");
 }
 
 static void reclaim_done(struct work *work)
@@ -620,7 +622,7 @@ static int create_dir_for(uint32_t vid)
 
 	snprintf(p, sizeof(p), "%s/%06"PRIx32, object_cache_dir, vid);
 	if (xmkdir(p, sd_def_dmode) < 0) {
-		sd_eprintf("%s, %m", p);
+		sd_err("%s, %m", p);
 		ret = -1;
 	}
 	return ret;
@@ -706,13 +708,14 @@ static void add_to_lru_cache(struct object_cache *oc, uint32_t idx, bool create)
 {
 	struct object_cache_entry *entry = alloc_cache_entry(oc, idx);
 
-	sd_dprintf("oid %"PRIx64" added", idx_to_oid(oc->vid, idx));
+	sd_debug("oid %"PRIx64" added", idx_to_oid(oc->vid, idx));
 
 	write_lock_cache(oc);
-	if (lru_tree_insert(&oc->lru_tree, entry))
+	if (unlikely(lru_tree_insert(&oc->lru_tree, entry)))
 		panic("the object already exist");
 	uatomic_add(&gcache.capacity, CACHE_OBJECT_SIZE);
 	list_add_tail(&entry->lru_list, &oc->lru_head);
+	oc->total_count++;
 	if (create) {
 		/* Cache lock assure it is not raced with pusher */
 		entry->bmap = UINT64_MAX;
@@ -727,8 +730,8 @@ static inline int lookup_path(char *path)
 	int ret = SD_RES_SUCCESS;
 
 	if (access(path, R_OK | W_OK) < 0) {
-		if (errno != ENOENT) {
-			sd_dprintf("%m");
+		if (unlikely(errno != ENOENT)) {
+			sd_debug("%m");
 			ret = SD_RES_EIO;
 		} else {
 			ret = SD_RES_NO_CACHE;
@@ -750,13 +753,13 @@ static int object_cache_lookup(struct object_cache *oc, uint32_t idx,
 
 	flags |= O_CREAT | O_TRUNC;
 	fd = open(path, flags, sd_def_fmode);
-	if (fd < 0) {
-		sd_dprintf("%s, %m", path);
+	if (unlikely(fd < 0)) {
+		sd_debug("%s, %m", path);
 		ret = SD_RES_EIO;
 		goto out;
 	}
 	ret = prealloc(fd, get_objsize(idx_to_oid(oc->vid, idx)));
-	if (ret < 0) {
+	if (unlikely(ret < 0)) {
 		ret = SD_RES_EIO;
 		goto out_close;
 	}
@@ -780,11 +783,11 @@ static int create_cache_object(struct object_cache *oc, uint32_t idx,
 		object_cache_dir, oc->vid, idx);
 	fd = open(tmp_path, flags, sd_def_fmode);
 	if (fd < 0) {
-		if (errno == EEXIST) {
-			sd_dprintf("%08"PRIx32" already created", idx);
+		if (likely(errno == EEXIST)) {
+			sd_debug("%08"PRIx32" already created", idx);
 			goto out;
 		}
-		sd_dprintf("%m");
+		sd_debug("%m");
 		ret = SD_RES_EIO;
 		goto out;
 	}
@@ -792,35 +795,35 @@ static int create_cache_object(struct object_cache *oc, uint32_t idx,
 	/* We need to extend it if the buffer is trimmed */
 	if (offset != 0 || buf_size != obj_size) {
 		ret = prealloc(fd, obj_size);
-		if (ret < 0) {
+		if (unlikely(ret < 0)) {
 			ret = SD_RES_EIO;
-			sd_eprintf("%m");
+			sd_err("%m");
 			goto out_close;
 		}
 	}
 
 	ret = xpwrite(fd, buffer, buf_size, offset);
-	if (ret != buf_size) {
+	if (unlikely(ret != buf_size)) {
 		ret = SD_RES_EIO;
-		sd_eprintf("failed, vid %"PRIx32", idx %"PRIx32, oc->vid, idx);
+		sd_err("failed, vid %"PRIx32", idx %"PRIx32, oc->vid, idx);
 		goto out_close;
 	}
 	/* This is intended to take care of partial write due to crash */
 	snprintf(path, sizeof(path), "%s/%06"PRIx32"/%08"PRIx32,
 		 object_cache_dir, oc->vid, idx);
 	ret = link(tmp_path, path);
-	if (ret < 0) {
+	if (unlikely(ret < 0)) {
 		if (errno == EEXIST) {
 			ret = SD_RES_OID_EXIST;
 			goto out_close;
 		}
-		sd_dprintf("failed to link %s to %s: %m", tmp_path, path);
+		sd_debug("failed to link %s to %s: %m", tmp_path, path);
 		/* FIXME: teach object cache handle EIO gracefully */
 		ret = SD_RES_EIO;
 		goto out_close;
 	}
 	ret = SD_RES_SUCCESS;
-	sd_dprintf("%08"PRIx32" size %zu", idx, obj_size);
+	sd_debug("%08"PRIx32" size %zu", idx, obj_size);
 out_close:
 	close(fd);
 	unlink(tmp_path);
@@ -847,7 +850,7 @@ static int object_cache_pull(struct object_cache *oc, uint32_t idx)
 	if (ret != SD_RES_SUCCESS)
 		goto err;
 
-	sd_dprintf("oid %"PRIx64" pulled successfully", oid);
+	sd_debug("oid %"PRIx64" pulled successfully", oid);
 	ret = create_cache_object(oc, idx, buf, rsp->data_length,
 				  rsp->obj.offset, data_length);
 	/*
@@ -880,7 +883,7 @@ static void do_push_object(struct work *work)
 	struct object_cache *oc = entry->oc;
 	uint64_t oid = idx_to_oid(oc->vid, entry_idx(entry));
 
-	sd_dprintf("%"PRIx64, oid);
+	sd_debug("%"PRIx64, oid);
 
 	read_lock_entry(entry);
 	/*
@@ -892,9 +895,9 @@ static void do_push_object(struct work *work)
 	if (oid_is_readonly(idx_to_oid(oc->vid, entry_idx(entry))))
 		goto clean;
 
-	if (push_cache_object(oc->vid, entry_idx(entry), entry->bmap,
-			      !!(entry->idx & CACHE_CREATE_BIT))
-	    != SD_RES_SUCCESS)
+	if (unlikely(push_cache_object(oc->vid, entry_idx(entry), entry->bmap,
+				       !!(entry->idx & CACHE_CREATE_BIT))
+		     != SD_RES_SUCCESS))
 		panic("push failed but should never fail");
 clean:
 	if (uatomic_sub_return(&oc->push_count, 1) == 0)
@@ -903,7 +906,7 @@ clean:
 	entry->bmap = 0;
 	unlock_entry(entry);
 
-	sd_dprintf("%"PRIx64" done", oid);
+	sd_debug("%"PRIx64" done", oid);
 	put_cache_entry(entry);
 }
 
@@ -948,7 +951,7 @@ static int object_cache_push(struct object_cache *oc)
 
 	eventfd_xread(oc->push_efd);
 
-	sd_dprintf("%"PRIx32" completed", oc->vid);
+	sd_debug("%"PRIx32" completed", oc->vid);
 	return SD_RES_SUCCESS;
 }
 
@@ -1024,7 +1027,7 @@ static struct object_cache_entry *oid_to_entry(uint64_t oid)
 	cache = find_object_cache(vid, false);
 	entry = get_cache_entry_from(cache, idx);
 	if (!entry) {
-		sd_dprintf("%" PRIx64 " doesn't exist", oid);
+		sd_debug("%" PRIx64 " doesn't exist", oid);
 		return NULL;
 	}
 	return entry;
@@ -1040,11 +1043,11 @@ static int object_cache_flush_and_delete(struct object_cache *oc)
 	int ret = 0;
 	char p[PATH_MAX];
 
-	sd_dprintf("%"PRIx32, vid);
+	sd_debug("%"PRIx32, vid);
 	snprintf(p, sizeof(p), "%s/%06"PRIx32, object_cache_dir, vid);
 	dir = opendir(p);
 	if (!dir) {
-		sd_dprintf("%m");
+		sd_debug("%m");
 		ret = -1;
 		goto out;
 	}
@@ -1053,9 +1056,9 @@ static int object_cache_flush_and_delete(struct object_cache *oc)
 		if (!strncmp(d->d_name, ".", 1))
 			continue;
 		if (strcmp(d->d_name + 8, ".tmp") == 0) {
-			sd_dprintf("try to del %s", d->d_name);
+			sd_debug("try to del %s", d->d_name);
 			if (unlinkat(dirfd(dir), d->d_name, 0) < 0)
-				sd_eprintf("%m");
+				sd_err("%m");
 			continue;
 		}
 
@@ -1123,8 +1126,8 @@ int object_cache_handle_request(struct request *req)
 	int ret;
 	bool create = false;
 
-	sd_dprintf("%08"PRIx32", len %"PRIu32", off %"PRIu64, idx,
-		   hdr->data_length, hdr->obj.offset);
+	sd_debug("%08" PRIx32 ", len %" PRIu32 ", off %" PRIu64, idx,
+		 hdr->data_length, hdr->obj.offset);
 
 	cache = find_object_cache(vid, true);
 
@@ -1145,7 +1148,7 @@ retry:
 
 	entry = get_cache_entry_from(cache, idx);
 	if (!entry) {
-		sd_dprintf("retry oid %"PRIx64, oid);
+		sd_debug("retry oid %"PRIx64, oid);
 		/*
 		 * For the case that object exists but isn't added to object
 		 * list yet, we call pthread_yield() to expect other thread can
@@ -1179,9 +1182,9 @@ int object_cache_write(uint64_t oid, char *data, unsigned int datalen,
 	struct object_cache_entry *entry = oid_to_entry(oid);
 	int ret;
 
-	sd_dprintf("%" PRIx64, oid);
+	sd_debug("%" PRIx64, oid);
 	if (!entry) {
-		sd_dprintf("%" PRIx64 " doesn't exist", oid);
+		sd_debug("%" PRIx64 " doesn't exist", oid);
 		return SD_RES_NO_CACHE;
 	}
 
@@ -1196,9 +1199,9 @@ int object_cache_read(uint64_t oid, char *data, unsigned int datalen,
 	struct object_cache_entry *entry = oid_to_entry(oid);
 	int ret;
 
-	sd_dprintf("%" PRIx64, oid);
+	sd_debug("%" PRIx64, oid);
 	if (!entry) {
-		sd_dprintf("%" PRIx64 " doesn't exist", oid);
+		sd_debug("%" PRIx64 " doesn't exist", oid);
 		return SD_RES_NO_CACHE;
 	}
 
@@ -1214,7 +1217,7 @@ int object_cache_flush_vdi(uint32_t vid)
 
 	cache = find_object_cache(vid, false);
 	if (!cache) {
-		sd_dprintf("%"PRIx32" not found", vid);
+		sd_debug("%"PRIx32" not found", vid);
 		return SD_RES_SUCCESS;
 	}
 
@@ -1256,7 +1259,7 @@ static int load_cache_object(struct object_cache *cache)
 		 cache->vid);
 	dir = opendir(path);
 	if (!dir) {
-		sd_dprintf("%m");
+		sd_debug("%m");
 		ret = -1;
 		goto out;
 	}
@@ -1266,9 +1269,9 @@ static int load_cache_object(struct object_cache *cache)
 			continue;
 
 		if (strcmp(d->d_name + 8, ".tmp") == 0) {
-			sd_dprintf("try to del %s", d->d_name);
+			sd_debug("try to del %s", d->d_name);
 			if (unlinkat(dirfd(dir), d->d_name, 0) < 0)
-				sd_eprintf("%m");
+				sd_err("%m");
 			continue;
 		}
 
@@ -1283,7 +1286,7 @@ static int load_cache_object(struct object_cache *cache)
 		 * cluster isn't fully working.
 		 */
 		add_to_lru_cache(cache, idx, true);
-		sd_dprintf("%"PRIx64, idx_to_oid(cache->vid, idx));
+		sd_debug("%"PRIx64, idx_to_oid(cache->vid, idx));
 	}
 
 	closedir(dir);
@@ -1302,7 +1305,7 @@ static int load_cache(void)
 	snprintf(path, sizeof(path), "%s", object_cache_dir);
 	dir = opendir(path);
 	if (!dir) {
-		sd_dprintf("%m");
+		sd_debug("%m");
 		ret = -1;
 		goto out;
 	}
@@ -1332,7 +1335,7 @@ int object_cache_remove(uint64_t oid)
 	if (!entry)
 		return SD_RES_NO_OBJ;
 
-	sd_dprintf("%" PRIx64, oid);
+	sd_debug("%" PRIx64, oid);
 	while (refcount_read(&entry->refcnt) > 1)
 		usleep(100000); /* Object might be in push */
 
@@ -1364,13 +1367,13 @@ int object_cache_init(const char *p)
 
 	strbuf_addstr(&buf, p);
 	if (xmkdir(buf.buf, sd_def_dmode) < 0) {
-		sd_eprintf("%s %m", buf.buf);
+		sd_err("%s %m", buf.buf);
 		ret = -1;
 		goto err;
 	}
 	strbuf_addstr(&buf, "/cache");
 	if (xmkdir(buf.buf, sd_def_dmode) < 0) {
-		sd_eprintf("%s %m", buf.buf);
+		sd_err("%s %m", buf.buf);
 		ret = -1;
 		goto err;
 	}
@@ -1398,4 +1401,32 @@ void object_cache_format(void)
 		}
 	}
 	uatomic_set(&gcache.capacity, 0);
+}
+
+int object_cache_get_info(struct object_cache_info *info)
+{
+	int j = 0;
+
+	info->used = gcache.capacity * 1024 * 1024;
+	info->size = sys->object_cache_size * 1024 * 1024;
+
+	for (int i = 0; i < HASH_SIZE; i++) {
+		struct hlist_head *head = cache_hashtable + i;
+		struct object_cache *cache;
+		struct hlist_node *node;
+
+		sd_read_lock(&hashtable_lock[i]);
+		hlist_for_each_entry(cache, node, head, hash) {
+			read_lock_cache(cache);
+			info->caches[j].vid = cache->vid;
+			info->caches[j].dirty = cache->dirty_count;
+			info->caches[j].total = cache->total_count;
+			j++;
+			unlock_cache(cache);
+		}
+		sd_unlock(&hashtable_lock[i]);
+	}
+	info->count = j;
+
+	return sizeof(*info);
 }

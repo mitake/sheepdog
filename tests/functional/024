@@ -2,18 +2,7 @@
 
 # Make sure data written to the cluster can be read from a newly joined node
 
-seq=`basename $0`
-echo "QA output created by $seq"
-
-here=`pwd`
-tmp=/tmp/$$
-status=1        # failure is the default!
-
-# get standard environment, filters and checks
-. ./common.rc
-. ./common.filter
-
-_cleanup
+. ./common
 
 if [[ "$DRIVER" == zoo* ]];then
 	DRIVER=${DRIVER/1000/5000}
@@ -30,18 +19,18 @@ echo "formatting cluster"
 _cluster_format -c 1
 
 echo "creating vdi ${NAME}"
-$COLLIE vdi create ${VDI_NAME} ${VDI_SIZE}
+$DOG vdi create ${VDI_NAME} ${VDI_SIZE}
 sleep 1
 
 echo "filling ${VDI_NAME} with data"
-qemu-io -c "write 0 ${VDI_SIZE}" sheepdog:${VDI_NAME} | _filter_qemu_io
+$QEMU_IO -c "write 0 ${VDI_SIZE}" sheepdog:${VDI_NAME} | _filter_qemu_io
 
 echo "reading back ${VDI_NAME}"
-qemu-io -c "read 0 1m" sheepdog:${VDI_NAME} | _filter_qemu_io
+$QEMU_IO -c "read 0 1m" sheepdog:${VDI_NAME} | _filter_qemu_io
 
 echo "starting second sheep"
 _start_sheep 1
 _wait_for_sheep 2
 
 echo "reading data from second sheep"
-qemu-io -c "read 0 ${VDI_SIZE}" sheepdog:localhost:7001:${VDI_NAME} | _filter_qemu_io
+$QEMU_IO -c "read 0 ${VDI_SIZE}" sheepdog:localhost:7001:${VDI_NAME} | _filter_qemu_io

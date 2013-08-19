@@ -7,73 +7,67 @@
 
 #include "sheep_priv.h"
 
-struct ipinfo {
-	const char *file;           /* Source code filename for EIP */
-	int line;                   /* Source code linenumber for EIP */
-	const char *fn_name;        /* Name of function containing EIP */
-	int fn_namelen;             /* Length of function name */
-	unsigned long fn_addr;      /* Address of start of function */
-	int fn_narg;                /* Number of function arguments */
-};
-
 struct caller {
-	struct list_head list;
-	struct hlist_node hash;
+	unsigned long addr;
 	unsigned long mcount;
-	int namelen;
 	const char *name;
+	const char *section;
 };
 
-typedef void (*trace_func_t)(unsigned long ip, unsigned long *parent_ip);
-/* Type of the callback handlers for function entry and return */
-typedef void (*trace_func_graph_ret_t)(struct trace_graph_item *);
-typedef void (*trace_func_graph_ent_t)(struct trace_graph_item *);
+struct tracer {
+	const char *name;
 
-/* graph.c */
+	void (*enter)(const struct caller *this_fn, int depth);
+	void (*exit)(const struct caller *this_fn, int depth);
 
-/* stabs.c */
-int get_ipinfo(unsigned long ip, struct ipinfo *info);
+	/* internal use only */
+	uatomic_bool enabled;
+	struct list_head list;
+};
+
+#define SD_MAX_STACK_DEPTH 1024
 
 /* mcount.S */
 void mcount(void);
-void mcount_call(void);
 void trace_caller(void);
-void trace_call(unsigned long, unsigned long *);
-extern const unsigned char NOP5[];
 void trace_return_caller(void);
-unsigned long trace_return_call(void);
+void trace_function_enter(unsigned long, unsigned long *);
+unsigned long trace_function_exit(void);
 
 /* trace.c */
 #ifdef HAVE_TRACE
-  int trace_init_signal(void);
   int trace_init(void);
-  int register_trace_function(trace_func_t func);
-  int trace_enable(void);
-  int trace_disable(void);
-  struct caller *trace_lookup_ip(unsigned long ip, bool create);
+  void regist_tracer(struct tracer *tracer);
+  int trace_enable(const char *name);
+  int trace_disable(const char *name);
+  size_t trace_status(char *buf);
   int trace_buffer_pop(void *buf, uint32_t len);
   void trace_buffer_push(int cpuid, struct trace_graph_item *item);
-  void trace_register_thread(pthread_t id);
-  void trace_unregister_thread(pthread_t id);
 
 #else
-  static inline int trace_init_signal(void) { return 0; }
   static inline int trace_init(void) { return 0; }
-  static inline int trace_enable(void) { return 0; }
-  static inline int trace_disable(void) { return 0; }
+  static inline int trace_enable(const char *name) { return 0; }
+  static inline int trace_disable(const char *name) { return 0; }
+  static inline size_t trace_status(char *buf) { return 0; }
   static inline int trace_buffer_pop(void *buf, uint32_t len) { return 0; }
   static inline void trace_buffer_push(
 	  int cpuid, struct trace_graph_item *item) { return; }
-  static inline void trace_register_thread(pthread_t id) { return; }
-  static inline void trace_unregister_thread(pthread_t id) { return; }
 
 #endif /* HAVE_TRACE */
 
-#define register_tracer(new)			\
+#define tracer_register(tracer)			\
 static void __attribute__((constructor))	\
-register_ ## _tracer(void) 			\
-{  						\
-	register_trace_function(new);		\
+regist_ ##tracer(void)				\
+{						\
+	regist_tracer(&tracer);			\
+}
+
+static inline uint64_t clock_get_time(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_REALTIME, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000LL + (uint64_t)ts.tv_nsec;
 }
 
 #endif /* __ASSEMBLY__ */

@@ -29,7 +29,7 @@ static const char bind_help[] =
 "This tries to teach sheep listen to NIC of 192.168.1.1.\n"
 "\nExample:\n\t$ sheep -b 0.0.0.0 ...\n"
 "This tries to teach sheep listen to all the NICs available. It can be useful\n"
-"when you want sheep to response collie without specified address and port.\n";
+"when you want sheep to response dog without specified address and port.\n";
 
 static const char ioaddr_help[] =
 "Example:\n\t$ sheep -i host=192.168.1.1,port=7002 ...\n"
@@ -140,8 +140,7 @@ static void usage(int status)
 			goto out;
 		}
 
-		fprintf(stderr, "Try '%s --help' for more information.\n",
-			program_name);
+		sd_err("Try '%s --help' for more information.", program_name);
 	} else {
 		struct sd_option *opt;
 
@@ -209,13 +208,13 @@ static void signal_handler(int listen_fd, int events, void *data)
 
 	ret = read(sigfd, &siginfo, sizeof(siginfo));
 	assert(ret == sizeof(siginfo));
-	sd_dprintf("signal %d", siginfo.ssi_signo);
+	sd_debug("signal %d", siginfo.ssi_signo);
 	switch (siginfo.ssi_signo) {
 	case SIGTERM:
 		sys->cinfo.status = SD_STATUS_KILLED;
 		break;
 	default:
-		sd_eprintf("signal %d unhandled", siginfo.ssi_signo);
+		sd_err("signal %d unhandled", siginfo.ssi_signo);
 		break;
 	}
 }
@@ -225,35 +224,30 @@ static int init_signal(void)
 	sigset_t mask;
 	int ret;
 
-	ret = trace_init_signal();
-	if (ret)
-		return ret;
-
 	sigemptyset(&mask);
 	sigaddset(&mask, SIGTERM);
 	sigprocmask(SIG_BLOCK, &mask, NULL);
 
 	sigfd = signalfd(-1, &mask, SFD_NONBLOCK);
 	if (sigfd < 0) {
-		sd_eprintf("failed to create a signal fd: %m");
+		sd_err("failed to create a signal fd: %m");
 		return -1;
 	}
 
 	ret = register_event(sigfd, signal_handler, NULL);
 	if (ret) {
-		sd_eprintf("failed to register signal handler (%d)", ret);
+		sd_err("failed to register signal handler (%d)", ret);
 		return -1;
 	}
 
-	sd_dprintf("register signal_handler for %d", sigfd);
+	sd_debug("register signal_handler for %d", sigfd);
 
 	return 0;
 }
 
 static void crash_handler(int signo)
 {
-	sd_printf(SDOG_EMERG, "sheep exits unexpectedly (%s).",
-		  strsignal(signo));
+	sd_emerg("sheep exits unexpectedly (%s).", strsignal(signo));
 
 	sd_backtrace();
 	sd_dump_variable(__sys);
@@ -293,9 +287,8 @@ static void object_cache_size_set(char *s)
 	return;
 
 err:
-	fprintf(stderr, "Invalid object cache option '%s': "
-		"size must be an integer between 1 and %"PRIu32" inclusive\n",
-		s, max_cache_size);
+	sd_err("Invalid object cache option '%s': size must be an integer "
+	       "between 1 and %" PRIu32 " inclusive", s, max_cache_size);
 	exit(1);
 }
 
@@ -339,7 +332,7 @@ static void _object_cache_set(char *s)
 		}
 	}
 
-	fprintf(stderr, "invalid object cache arg: %s\n", s);
+	sd_err("invalid object cache arg: %s", s);
 	exit(1);
 }
 
@@ -351,7 +344,7 @@ static void object_cache_set(char *arg)
 	parse_arg(arg, ",", _object_cache_set);
 
 	if (sys->object_cache_size == 0) {
-		fprintf(stderr, "object cache size is not set\n");
+		sd_err("object cache size is not set");
 		exit(1);
 	}
 }
@@ -373,15 +366,15 @@ static void init_journal_arg(char *arg)
 		arg += szl;
 		jsize = strtoll(arg, NULL, 10);
 		if (jsize < MIN_JOURNAL_SIZE || jsize == LLONG_MAX) {
-			fprintf(stderr, "invalid size %s, "
-				"must be bigger than %u(M)\n", arg,
+			sd_err("invalid size %s, must be bigger than %u(M)",
+			       arg,
 				MIN_JOURNAL_SIZE);
 			exit(1);
 		}
 	} else if (!strncmp(sp, arg, spl)) {
 		jskip = true;
 	} else {
-		fprintf(stderr, "invalid paramters %s\n", arg);
+		sd_err("invalid paramters %s", arg);
 		exit(1);
 	}
 }
@@ -399,9 +392,8 @@ static void init_io_arg(char *arg)
 		arg += hl;
 		io_pt = arg;
 	} else {
-		fprintf(stderr, "invalid paramters %s. "
-			"Use '-i host=a.b.c.d,port=xxx'\n",
-			arg);
+		sd_err("invalid paramters %s. Use '-i host=a.b.c.d,port=xxx'",
+		       arg);
 		exit(1);
 	}
 }
@@ -421,8 +413,7 @@ static size_t get_nr_nodes(void)
 
 static int create_work_queues(void)
 {
-	if (init_work_queue(get_nr_nodes, trace_register_thread,
-			    trace_unregister_thread))
+	if (init_work_queue(get_nr_nodes))
 		return -1;
 
 	sys->gateway_wqueue = create_work_queue("gway", WQ_UNLIMITED);
@@ -460,23 +451,23 @@ static void check_host_env(void)
 	struct rlimit r;
 
 	if (getrlimit(RLIMIT_NOFILE, &r) < 0)
-		sd_eprintf("failed to get nofile %m");
+		sd_err("failed to get nofile %m");
 	/*
 	 * 1024 is default for NOFILE on most distributions, which is very
 	 * dangerous to run Sheepdog cluster.
 	 */
 	else if (r.rlim_cur == 1024)
-		sd_eprintf("WARN: Allowed open files 1024 too small, "
-			   "suggested %u", SD_RLIM_NOFILE);
+		sd_err("WARN: Allowed open files 1024 too small, suggested %u",
+		       SD_RLIM_NOFILE);
 	else if (r.rlim_cur < SD_RLIM_NOFILE)
-		sd_iprintf("Allowed open files %lu, suggested %u", r.rlim_cur,
-			   SD_RLIM_NOFILE);
+		sd_info("Allowed open files %lu, suggested %u", r.rlim_cur,
+			SD_RLIM_NOFILE);
 
 	if (getrlimit(RLIMIT_CORE, &r) < 0)
-		sd_dprintf("failed to get core %m");
+		sd_debug("failed to get core %m");
 	else if (r.rlim_cur < RLIM_INFINITY)
-		sd_dprintf("Allowed core file size %lu, suggested unlimited",
-			   r.rlim_cur);
+		sd_debug("Allowed core file size %lu, suggested unlimited",
+			 r.rlim_cur);
 
 	/*
 	 * Disable glibc's dynamic mmap threshold and set it as 512k.
@@ -521,8 +512,7 @@ static int lock_and_daemon(bool daemonize, const char *base_dir)
 		}
 
 		if (setsid() == -1) {
-			sd_eprintf("becoming a leader of a new session"
-				" failed: %m");
+			sd_err("becoming a leader of a new session failed: %m");
 			status = 1;
 			goto end;
 		}
@@ -531,7 +521,7 @@ static int lock_and_daemon(bool daemonize, const char *base_dir)
 		case 0:
 			break;
 		case -1:
-			sd_eprintf("fork() failed during daemonize: %m");
+			sd_err("fork() failed during daemonize: %m");
 			status = 1;
 			goto end;
 		default:
@@ -540,14 +530,14 @@ static int lock_and_daemon(bool daemonize, const char *base_dir)
 		}
 
 		if (chdir("/")) {
-			sd_eprintf("chdir to / failed: %m");
+			sd_err("chdir to / failed: %m");
 			status = 1;
 			goto end;
 		}
 
 		devnull_fd = open("/dev/null", O_RDWR);
 		if (devnull_fd < 0) {
-			sd_eprintf("opening /dev/null failed: %m");
+			sd_err("opening /dev/null failed: %m");
 			status = 1;
 			goto end;
 		}
@@ -555,7 +545,7 @@ static int lock_and_daemon(bool daemonize, const char *base_dir)
 
 	ret = lock_base_dir(base_dir);
 	if (ret < 0) {
-		sd_eprintf("locking directory: %s failed", base_dir);
+		sd_err("locking directory: %s failed", base_dir);
 		status = 1;
 		goto end;
 	}
@@ -606,8 +596,7 @@ int main(int argc, char **argv)
 			port = strtol(optarg, &p, 10);
 			if (optarg == p || port < 1 || UINT16_MAX < port
 				|| *p != '\0') {
-				fprintf(stderr, "Invalid port number '%s'\n",
-					optarg);
+				sd_err("Invalid port number '%s'", optarg);
 				exit(1);
 			}
 			break;
@@ -624,8 +613,7 @@ int main(int argc, char **argv)
 			log_level = strtol(optarg, &p, 10);
 			if (optarg == p || log_level < SDOG_EMERG ||
 			    SDOG_DEBUG < log_level || *p != '\0') {
-				fprintf(stderr, "Invalid log level '%s'\n",
-					optarg);
+				sd_err("Invalid log level '%s'", optarg);
 				sdlog_help();
 				exit(1);
 			}
@@ -635,8 +623,7 @@ int main(int argc, char **argv)
 			break;
 		case 'y':
 			if (!str_to_addr(optarg, sys->this_node.nid.addr)) {
-				fprintf(stderr, "Invalid address: '%s'\n",
-					optarg);
+				sd_err("Invalid address: '%s'", optarg);
 				exit(1);
 			}
 			explicit_addr = true;
@@ -659,9 +646,9 @@ int main(int argc, char **argv)
 			zone = strtol(optarg, &p, 10);
 			if (optarg == p || zone < 0 || UINT32_MAX < zone
 				|| *p != '\0') {
-				fprintf(stderr, "Invalid zone id '%s': "
-					"must be an integer between 0 and %u\n",
-					optarg, UINT32_MAX);
+				sd_err("Invalid zone id '%s': must be "
+				       "an integer between 0 and %u", optarg,
+				       UINT32_MAX);
 				exit(1);
 			}
 			sys->this_node.zone = zone;
@@ -672,7 +659,7 @@ int main(int argc, char **argv)
 		case 'c':
 			sys->cdrv = find_cdrv(optarg);
 			if (!sys->cdrv) {
-				fprintf(stderr, "Invalid cluster driver '%s'\n", optarg);
+				sd_err("Invalid cluster driver '%s'", optarg);
 				fprintf(stderr, "Supported drivers:");
 				FOR_EACH_CLUSTER_DRIVER(cdrv) {
 					fprintf(stderr, " %s", cdrv->name);
@@ -689,15 +676,13 @@ int main(int argc, char **argv)
 		case 'i':
 			parse_arg(optarg, ",", init_io_arg);
 			if (!str_to_addr(io_addr, sys->this_node.nid.io_addr)) {
-				fprintf(stderr, "Bad addr: '%s'\n",
-					io_addr);
+				sd_err("Bad addr: '%s'", io_addr);
 				exit(1);
 			}
 
 			if (io_pt)
 				if (sscanf(io_pt, "%u", &io_port) != 1) {
-					fprintf(stderr, "Bad port '%s'\n",
-						io_pt);
+					sd_err("Bad port '%s'", io_pt);
 					exit(1);
 				}
 			sys->this_node.nid.io_port = io_port;
@@ -706,8 +691,7 @@ int main(int argc, char **argv)
 			uatomic_set_true(&sys->use_journal);
 			parse_arg(optarg, ",", init_journal_arg);
 			if (!jsize) {
-				fprintf(stderr,
-					"you must specify size for journal\n");
+				sd_err("you must specify size for journal");
 				exit(1);
 			}
 			break;
@@ -733,10 +717,6 @@ int main(int argc, char **argv)
 		}
 	}
 
-	/*
-	 * early_log_init() must be called before any calling of
-	 * sd_printf() series
-	 */
 	sheep_info.port = port;
 	early_log_init(log_format, &sheep_info);
 
@@ -756,7 +736,7 @@ int main(int argc, char **argv)
 
 	dir = realpath(dirp, NULL);
 	if (!dir) {
-		fprintf(stderr, "%m\n");
+		sd_err("%m");
 		exit(1);
 	}
 
@@ -808,7 +788,7 @@ int main(int argc, char **argv)
 
 	ret = create_cluster(port, zone, nr_vnodes, explicit_addr);
 	if (ret) {
-		sd_eprintf("failed to create sheepdog cluster");
+		sd_err("failed to create sheepdog cluster");
 		exit(1);
 	}
 
@@ -817,7 +797,7 @@ int main(int argc, char **argv)
 		if (!strlen(jpath))
 			/* internal journal */
 			memcpy(jpath, dir, strlen(dir));
-		sd_dprintf("%s, %zd, %d", jpath, jsize, jskip);
+		sd_debug("%s, %zd, %d", jpath, jsize, jskip);
 		ret = journal_file_init(jpath, jsize, jskip);
 		if (ret)
 			exit(1);
@@ -859,31 +839,30 @@ int main(int argc, char **argv)
 		exit(1);
 
 	if (pid_file && (create_pidfile(pid_file) != 0)) {
-		fprintf(stderr, "failed to pid file '%s' - %m\n", pid_file);
+		sd_err("failed to pid file '%s' - %m", pid_file);
 		exit(1);
 	}
 
 	if (chdir(dir) < 0) {
-		fprintf(stderr, "failed to chdir to %s: %m\n", dir);
+		sd_err("failed to chdir to %s: %m", dir);
 		exit(1);
 	}
 
 	free(dir);
 	check_host_env();
-	sd_printf(SDOG_INFO, "sheepdog daemon (version %s) started",
-		  PACKAGE_VERSION);
+	sd_info("sheepdog daemon (version %s) started", PACKAGE_VERSION);
 
 	while (sys->nr_outstanding_reqs != 0 ||
 	       (sys->cinfo.status != SD_STATUS_KILLED &&
 		sys->cinfo.status != SD_STATUS_SHUTDOWN))
 		event_loop(-1);
 
-	sd_printf(SDOG_INFO, "shutdown");
+	sd_info("shutdown");
 
 	leave_cluster();
 
 	if (uatomic_is_true(&sys->use_journal)) {
-		sd_iprintf("cleaning journal file");
+		sd_info("cleaning journal file");
 		clean_journal_file(jpath);
 	}
 

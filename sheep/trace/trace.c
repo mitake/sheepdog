@@ -11,31 +11,28 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <bfd.h>
+
 #include "trace.h"
 
-#define TRACE_HASH_BITS       7
-#define TRACE_HASH_SIZE       (1 << TRACE_HASH_BITS)
+/* Intel recommended one for 5 bytes nops (nopl 0x0(%rax,%rax,1)) */
+static const unsigned char NOP5[INSN_SIZE] = {0x0f, 0x1f, 0x44, 0x00, 0x00};
 
-static struct hlist_head trace_hashtable[TRACE_HASH_SIZE];
-static LIST_HEAD(caller_list);
-static pthread_mutex_t trace_lock = PTHREAD_MUTEX_INITIALIZER;
+static LIST_HEAD(tracers);
+static __thread int ret_stack_index;
+static __thread struct {
+	const struct caller *caller;
+	unsigned long ret;
+} trace_ret_stack[SD_MAX_STACK_DEPTH];
 
-static trace_func_t trace_func = trace_call;
-
-static int total_nr_workers;
-
-static pthread_mutex_t suspend_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t suspend_cond = PTHREAD_COND_INITIALIZER;
-static int suspend_count;
+static struct caller *callers;
+static size_t nr_callers;
 
 static struct strbuf *buffer;
+static pthread_mutex_t *buffer_lock;
 static int nr_cpu;
-static LIST_HEAD(worker_list);
 
-struct worker {
-	struct list_head list;
-	pthread_t id;
-};
+static __thread bool in_trace;
 
 union instruction {
 	unsigned char start[INSN_SIZE];
@@ -45,20 +42,12 @@ union instruction {
 	} __attribute__((packed));
 };
 
-static notrace void suspend(int num)
+static int caller_cmp(const struct caller *a, const struct caller *b)
 {
-	pthread_mutex_lock(&suspend_lock);
-	suspend_count--;
-	pthread_cond_wait(&suspend_cond, &suspend_lock);
-	pthread_mutex_unlock(&suspend_lock);
+	return intcmp(a->mcount, b->mcount);
 }
 
-static inline int trace_hash(unsigned long ip)
-{
-	return hash_64(ip, TRACE_HASH_BITS);
-}
-
-static notrace unsigned char *get_new_call(unsigned long ip, unsigned long addr)
+static unsigned char *get_new_call(unsigned long ip, unsigned long addr)
 {
 	static union instruction code;
 
@@ -68,7 +57,7 @@ static notrace unsigned char *get_new_call(unsigned long ip, unsigned long addr)
 	return code.start;
 }
 
-static notrace void replace_call(unsigned long ip, unsigned long func)
+static void replace_call(unsigned long ip, unsigned long func)
 {
 	unsigned char *new;
 
@@ -76,196 +65,201 @@ static notrace void replace_call(unsigned long ip, unsigned long func)
 	memcpy((void *)ip, new, INSN_SIZE);
 }
 
-static inline void replace_mcount_call(unsigned long func)
-{
-	unsigned long ip = (unsigned long)mcount_call;
-
-	replace_call(ip, func);
-}
-
-static inline void replace_trace_call(unsigned long func)
-{
-	unsigned long ip = (unsigned long)trace_call;
-
-	replace_call(ip, func);
-}
-
-static notrace int make_text_writable(unsigned long ip)
+static int make_text_writable(unsigned long ip)
 {
 	unsigned long start = ip & ~(getpagesize() - 1);
 
 	return mprotect((void *)start, getpagesize() + INSN_SIZE, PROT_READ | PROT_EXEC | PROT_WRITE);
 }
 
-notrace struct caller *trace_lookup_ip(unsigned long ip, bool create)
+static struct caller *trace_lookup_ip(unsigned long ip)
 {
-	int h = trace_hash(ip);
-	struct hlist_head *head = trace_hashtable + h;
-	struct hlist_node *node;
-	struct ipinfo info;
-	struct caller *new = NULL;
+	const struct caller key = {
+		.mcount = ip,
+	};
 
-	pthread_mutex_lock(&trace_lock);
-	if (hlist_empty(head))
-		goto not_found;
+	return xbsearch(&key, callers, nr_callers, caller_cmp);
+}
 
-	hlist_for_each_entry(new, node, head, hash) {
-		if (new->mcount == ip)
-			goto out;
+void regist_tracer(struct tracer *tracer)
+{
+	list_add_tail(&tracer->list, &tracers);
+}
+
+static void patch_all_sites(unsigned long addr)
+{
+	for (int i = 0; i < nr_callers; i++)
+		replace_call(callers[i].mcount, addr);
+}
+
+static void nop_all_sites(void)
+{
+	for (int i = 0; i < nr_callers; i++)
+		memcpy((void *)callers[i].mcount, NOP5, INSN_SIZE);
+}
+
+/* the entry point of the function */
+__attribute__((no_instrument_function))
+void trace_function_enter(unsigned long ip, unsigned long *ret_addr)
+{
+	struct tracer *tracer;
+	const struct caller *caller;
+
+	if (in_trace)
+		/* don't trace while tracing */
+		return;
+	in_trace = true;
+
+	assert(ret_stack_index < ARRAY_SIZE(trace_ret_stack));
+
+	caller = trace_lookup_ip(ip);
+
+	list_for_each_entry(tracer, &tracers, list) {
+		if (tracer->enter != NULL && uatomic_is_true(&tracer->enabled))
+			tracer->enter(caller, ret_stack_index);
 	}
-not_found:
-	if (get_ipinfo(ip, &info) < 0) {
-		sd_dprintf("ip: %lx not found", ip);
-		new = NULL;
-		goto out;
+
+	trace_ret_stack[ret_stack_index].caller = caller;
+	trace_ret_stack[ret_stack_index].ret = *ret_addr;
+	ret_stack_index++;
+	*ret_addr = (unsigned long)trace_return_caller;
+
+	in_trace = false;
+}
+
+/* the exit point of the function */
+__attribute__((no_instrument_function))
+unsigned long trace_function_exit(void)
+{
+	struct tracer *tracer;
+
+	assert(!in_trace);
+	in_trace = true;
+
+	ret_stack_index--;
+
+	list_for_each_entry(tracer, &tracers, list) {
+		if (tracer->exit != NULL && uatomic_is_true(&tracer->enabled))
+			tracer->exit(trace_ret_stack[ret_stack_index].caller,
+				     ret_stack_index);
 	}
-	if (create) {
-		new = malloc(sizeof(*new));
-		if (!new) {
-			sd_eprintf("out of memory");
-			goto out;
-		}
-		new->mcount = ip;
-		new->namelen = info.fn_namelen;
-		new->name = info.fn_name;
-		hlist_add_head(&new->hash, head);
-		list_add(&new->list, &caller_list);
-		sd_dprintf("add %.*s", info.fn_namelen, info.fn_name);
-	} else {
-		sd_dprintf("%.*s\n not found", info.fn_namelen, info.fn_name);
-		new = NULL;
+
+	in_trace = false;
+
+	return trace_ret_stack[ret_stack_index].ret;
+}
+
+static size_t count_enabled_tracers(void)
+{
+	size_t nr = 0;
+	struct tracer *t;
+
+	list_for_each_entry(t, &tracers, list) {
+		if (uatomic_is_true(&t->enabled))
+			nr++;
 	}
-out:
-	pthread_mutex_unlock(&trace_lock);
-	return new;
+
+	return nr;
+}
+
+static struct tracer *find_tracer(const char *name)
+{
+	struct tracer *t;
+
+	list_for_each_entry(t, &tracers, list) {
+		if (strcmp(t->name, name) == 0)
+			return t;
+	}
+
+	return NULL;
+}
+
+int trace_enable(const char *name)
+{
+	struct tracer *tracer = find_tracer(name);
+
+	if (tracer == NULL) {
+		sd_debug("no such tracer, %s", name);
+		return SD_RES_NO_SUPPORT;
+	} else if (uatomic_is_true(&tracer->enabled)) {
+		sd_debug("tracer %s is already enabled", name);
+		return SD_RES_INVALID_PARMS;
+	}
+
+	uatomic_set_true(&tracer->enabled);
+
+	if (count_enabled_tracers() == 1) {
+		suspend_worker_threads();
+		patch_all_sites((unsigned long)trace_caller);
+		resume_worker_threads();
+	}
+	sd_debug("tracer %s enabled", tracer->name);
+
+	return SD_RES_SUCCESS;
+}
+
+int trace_disable(const char *name)
+{
+	struct tracer *tracer = find_tracer(name);
+
+	if (tracer == NULL) {
+		sd_debug("no such tracer, %s", name);
+		return SD_RES_NO_SUPPORT;
+	} else if (!uatomic_is_true(&tracer->enabled)) {
+		sd_debug("tracer %s is not enabled", name);
+		return SD_RES_INVALID_PARMS;
+	}
+
+	uatomic_set_false(&tracer->enabled);
+	if (count_enabled_tracers() == 0) {
+		suspend_worker_threads();
+		nop_all_sites();
+		resume_worker_threads();
+	}
+	sd_debug("tracer %s disabled", tracer->name);
+
+	return SD_RES_SUCCESS;
 }
 
 /*
- * Try to NOP all the mcount call sites that are supposed to be traced.
- * Later we can enable it by asking these sites to point to trace_caller,
- * where we can override trace_call() with our own trace function. We can
- * do this, because below function record the IP of 'call mcount' inside the
- * callers.
- *
- * IP points to the return address.
+ * Set the current tracer status to 'buf' and return the length of the
+ * data. 'buf' must have enough space to store all the tracer list.
  */
-static notrace void do_trace_init(unsigned long ip)
+size_t trace_status(char *buf)
 {
+	struct tracer *t;
+	char *p = buf;
 
-	if (make_text_writable(ip) < 0)
-		return;
+	list_for_each_entry(t, &tracers, list) {
+		strcpy(p, t->name);
+		p += strlen(p);
 
-	memcpy((void *)ip, NOP5, INSN_SIZE);
-	trace_lookup_ip(ip, true);
-}
+		*p++ = '\t';
 
-notrace int register_trace_function(trace_func_t func)
-{
-	if (make_text_writable((unsigned long)trace_call) < 0)
-		return -1;
+		if (uatomic_is_true(&t->enabled))
+			strcpy(p, "enabled");
+		else
+			strcpy(p, "disabled");
+		p += strlen(p);
 
-	replace_trace_call((unsigned long)func);
-	trace_func = func;
-	return 0;
-}
-
-static notrace void suspend_worker_threads(void)
-{
-	struct worker *w;
-
-	pthread_mutex_lock(&trace_lock);
-	suspend_count = total_nr_workers;
-	list_for_each_entry(w, &worker_list, list) {
-		if (pthread_kill(w->id, SIGUSR2) != 0)
-			panic("%m");
+		*p++ = '\n';
 	}
 
-wait_for_worker_suspend:
-	/* Hold the lock, then all other worker can sleep on it */
-	pthread_mutex_lock(&suspend_lock);
-	if (suspend_count > 0) {
-		pthread_mutex_unlock(&suspend_lock);
-		pthread_yield();
-		goto wait_for_worker_suspend;
-	}
-	pthread_mutex_unlock(&suspend_lock);
-	pthread_mutex_unlock(&trace_lock);
+	*p++ = '\0';
+
+	return p - buf;
 }
 
-static notrace void resume_worker_threads(void)
-{
-	pthread_mutex_lock(&suspend_lock);
-	pthread_cond_broadcast(&suspend_cond);
-	pthread_mutex_unlock(&suspend_lock);
-}
-
-static notrace void patch_all_sites(unsigned long addr)
-{
-	struct caller *ca;
-	unsigned char *new;
-
-	pthread_mutex_lock(&trace_lock);
-	list_for_each_entry(ca, &caller_list, list) {
-		new = get_new_call(ca->mcount, addr);
-		memcpy((void *)ca->mcount, new, INSN_SIZE);
-	}
-	pthread_mutex_unlock(&trace_lock);
-}
-
-static notrace void nop_all_sites(void)
-{
-	struct caller *ca;
-
-	pthread_mutex_lock(&trace_lock);
-	list_for_each_entry(ca, &caller_list, list) {
-		memcpy((void *)ca->mcount, NOP5, INSN_SIZE);
-	}
-	pthread_mutex_unlock(&trace_lock);
-}
-
-notrace int trace_enable(void)
-{
-	if (trace_func == trace_call) {
-		sd_dprintf("no tracer available");
-		return SD_RES_NO_TAG;
-	}
-
-	suspend_worker_threads();
-	patch_all_sites((unsigned long)trace_caller);
-	resume_worker_threads();
-	sd_dprintf("tracer enabled");
-
-	return SD_RES_SUCCESS;
-}
-
-notrace int trace_disable(void)
-{
-	suspend_worker_threads();
-	nop_all_sites();
-	resume_worker_threads();
-	sd_dprintf("tracer disabled");
-
-	return SD_RES_SUCCESS;
-}
-
-int trace_init_signal(void)
-{
-	/* trace uses this signal to suspend the worker threads */
-	if (install_sighandler(SIGUSR2, suspend, false) < 0) {
-		sd_dprintf("%m");
-		return -1;
-	}
-	return 0;
-}
-
-notrace int trace_buffer_pop(void *buf, uint32_t len)
+int trace_buffer_pop(void *buf, uint32_t len)
 {
 	int readin, count = 0, requested = len;
 	char *buff = (char *)buf;
 	int i;
 
 	for (i = 0; i < nr_cpu; i++) {
+		pthread_mutex_lock(&buffer_lock[i]);
 		readin = strbuf_stripout(&buffer[i], buff, len);
+		pthread_mutex_unlock(&buffer_lock[i]);
 		count += readin;
 		if (count == requested)
 			return count;
@@ -279,55 +273,150 @@ notrace int trace_buffer_pop(void *buf, uint32_t len)
 	return count;
 }
 
-notrace void trace_buffer_push(int cpuid, struct trace_graph_item *item)
+void trace_buffer_push(int cpuid, struct trace_graph_item *item)
 {
+	pthread_mutex_lock(&buffer_lock[cpuid]);
 	strbuf_add(&buffer[cpuid], item, sizeof(*item));
+	pthread_mutex_unlock(&buffer_lock[cpuid]);
 }
 
-notrace int trace_init(void)
-{
-	int i;
+/* assume that mcount call exists in the first FIND_MCOUNT_RANGE bytes */
+#define FIND_MCOUNT_RANGE 32
 
-	if (make_text_writable((unsigned long)mcount_call) < 0) {
-		sd_dprintf("%m");
-		return -1;
+static unsigned long find_mcount_call(unsigned long entry_addr)
+{
+	unsigned long start = entry_addr;
+	unsigned long end = entry_addr + FIND_MCOUNT_RANGE;
+
+	while (start < end) {
+		union instruction *code;
+		unsigned long addr;
+
+		/* 0xe8 means a opcode of call */
+		code = memchr((void *)start, 0xe8, end - start);
+		addr = (unsigned long)code;
+
+		if (code == NULL)
+			break;
+
+		if ((int)((unsigned long)mcount - addr - INSN_SIZE) ==
+		    code->offset)
+			return addr;
+
+		start = addr + 1;
 	}
 
-	replace_mcount_call((unsigned long)do_trace_init);
-
-	nr_cpu = sysconf(_SC_NPROCESSORS_ONLN);
-	buffer = xzalloc(sizeof(*buffer) * nr_cpu);
-	for (i = 0; i < nr_cpu; i++)
-		strbuf_init(&buffer[i], 0);
-
-	sd_iprintf("trace support enabled. cpu count %d.", nr_cpu);
 	return 0;
 }
 
-notrace void trace_register_thread(pthread_t id)
+static bfd *get_bfd(void)
 {
-	struct worker *new = xmalloc(sizeof(*new));
+	char fname[PATH_MAX] = {0};
+	bfd *abfd;
 
-	new->id = id;
+	if (readlink("/proc/self/exe", fname, sizeof(fname)) < 0)
+		panic("failed to get a path of the program.");
 
-	pthread_mutex_lock(&trace_lock);
-	list_add(&new->list, &worker_list);
-	total_nr_workers++;
-	pthread_mutex_unlock(&trace_lock);
-	sd_dprintf("nr %d, add pid %lx", total_nr_workers, id);
+	abfd = bfd_openr(fname, NULL);
+	if (abfd == 0) {
+		sd_err("cannot open %s", fname);
+		return NULL;
+	}
+
+	if (!bfd_check_format(abfd, bfd_object)) {
+		sd_err("invalid format");
+		return NULL;
+	}
+
+	if (!(bfd_get_file_flags(abfd) & HAS_SYMS)) {
+		sd_err("no symbols found");
+		return NULL;
+	}
+
+	return abfd;
 }
 
-notrace void trace_unregister_thread(pthread_t id)
+/* Create a caller list which has a mcount call. */
+static int init_callers(void)
 {
-	struct worker *w, *tmp;
+	int max_symtab_size;
+	asymbol **symtab;
+	int symcount;
+	bfd *abfd;
 
-	pthread_mutex_lock(&trace_lock);
-	list_for_each_entry_safe(w, tmp, &worker_list, list) {
-		if (w->id == id) {
-			list_del(&w->list);
-			total_nr_workers--;
-		}
+	abfd = get_bfd();
+	if (abfd == NULL)
+		return -1;
+
+	max_symtab_size = bfd_get_symtab_upper_bound(abfd);
+	if (max_symtab_size < 0) {
+		sd_err("failed to get symtab size");
+		return -1;
 	}
-	pthread_mutex_unlock(&trace_lock);
-	sd_dprintf("nr %d, del pid %lx", total_nr_workers, id);
+
+	symtab = xmalloc(max_symtab_size);
+	symcount = bfd_canonicalize_symtab(abfd, symtab);
+
+	callers = xzalloc(sizeof(*callers) * symcount);
+	for (int i = 0; i < symcount; i++) {
+		asymbol *sym = symtab[i];
+		unsigned long ip, addr = bfd_asymbol_value(sym);
+		const char *name = bfd_asymbol_name(sym);
+		const char *section =
+			bfd_get_section_name(abfd, bfd_get_section(sym));
+
+		if (addr == 0 || !(sym->flags & BSF_FUNCTION))
+			/* sym is not a function */
+			continue;
+
+		ip = find_mcount_call(addr);
+		if (ip == 0) {
+			sd_debug("%s doesn't have mcount call", name);
+			continue;
+		}
+		if (make_text_writable(ip) < 0)
+			panic("failed to make mcount call writable");
+
+		callers[nr_callers].addr = addr;
+		callers[nr_callers].mcount = ip;
+		callers[nr_callers].name = strdup(name);
+		callers[nr_callers].section = strdup(section);
+		nr_callers++;
+	}
+	xqsort(callers, nr_callers, caller_cmp);
+
+	free(symtab);
+	bfd_close(abfd);
+
+	return 0;
+}
+
+/*
+ * Try to NOP all the mcount call sites that are supposed to be traced.  Later
+ * we can enable it by asking these sites to point to trace_caller.
+ */
+int trace_init(void)
+{
+	int i;
+
+	if (init_callers() < 0)
+		return -1;
+
+	nop_all_sites();
+
+#ifdef DEBUG
+	trace_enable("thread_checker");
+	trace_enable("loop_checker");
+#endif
+
+	nr_cpu = sysconf(_SC_NPROCESSORS_ONLN);
+	buffer = xzalloc(sizeof(*buffer) * nr_cpu);
+	buffer_lock = xzalloc(sizeof(*buffer_lock) * nr_cpu);
+	for (i = 0; i < nr_cpu; i++) {
+		strbuf_init(&buffer[i], 0);
+		pthread_mutex_init(&buffer_lock[i], NULL);
+	}
+
+	sd_info("trace support enabled. cpu count %d.", nr_cpu);
+	return 0;
 }

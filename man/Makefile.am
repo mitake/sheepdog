@@ -1,38 +1,18 @@
 MAINTAINERCLEANFILES    = Makefile.in
 
-dist_man_MANS		= sheep.8 collie.8
+dist_man_MANS		= sheep.8 dog.8
 
 if BUILD_SHEEPFS
 dist_man_MANS 		+= sheepfs.8
 endif
 
-EXTRA_DIST		= sheep.8.in collie.8.in sheepfs.8.in
+EXTRA_DIST		= sheep.8.in dog.8.in sheepfs.8.in
 
-sheep.8.options = $(shell ../sheep/sheep -h | \
-	perl -ne 'print ".TP\n.BI $$1 \"\\fR, \\fP\" $$2\n$$3\n" if /^  ([^,]+), (\S+)\s+(.+)/' | \
-	sed 's/\\/\\\\\\/g' | \
-	sed 's/"/\\"/g' | \
-	perl -pe 's/\n/\\n/g')
-
-collie.8.options = $(shell ../collie/collie -h | \
-	perl -ne 'if (/^  (.+?)  \s+(.+)/) {system "../collie/collie $$1 -h"; print "Description:\n  $$2\n"}'| \
-	sed 's/Usage: collie \(.*\)/.TP\n.BI "\1"/g' | \
-	sed 's/\(^[a-zA-Z]*:\)/\n\1/g' | \
-	sed 's/\\/\\\\\\/g' | \
-	sed 's/"/\\"/g' | \
-	perl -pe 's/\n/\\n/g')
-
-sheepfs.8.options = $(shell ../sheepfs/sheepfs -h | \
-	perl -ne 'print ".TP\n.BI $$1 \"\\fR, \\fP\" $$2\n$$3\n" if /^  ([^,]+), (\S+)\s+(.+)/' | \
-	sed 's/\\/\\\\\\/g' | \
-	sed 's/"/\\"/g' | \
-	perl -pe 's/\n/\\n/g')
-
-%: %.in Makefile
+%.8: %.8.in Makefile $(top_srcdir)/script/gen_man.pl $(top_builddir)/%/$*
 	rm -f $@-t $@
 	@sed \
 		-e "s#@DATE@#`date '+%Y-%m-%d'`#g" \
-		-e "s#@OPTIONS@#${$@.options}#g" \
+		-e "s#@OPTIONS@#$(shell $(top_srcdir)/script/gen_man.pl $(top_builddir)/$*/$*)#g" \
 		$< > $@-t
 	mv $@-t $@
 

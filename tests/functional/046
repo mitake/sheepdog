@@ -18,10 +18,12 @@ $DOG vdi snapshot test -s snap
 _vdi_list
 
 $DOG vdi delete test -s snap
+sleep 1
 $DOG vdi delete test -s snap # error
 _vdi_list
 
 $DOG vdi delete test
+sleep 1
 $DOG vdi delete test # error
 _vdi_list
 
@@ -31,9 +33,11 @@ $DOG vdi snapshot test -s snap
 _vdi_list
 
 $DOG vdi delete test
+sleep 1
 $DOG vdi delete test # error
 _vdi_list
 
 $DOG vdi delete test -s snap
+sleep 1
 $DOG vdi delete test -s snap # error
 _vdi_list

@@ -117,6 +117,68 @@ static int err_to_sderr(const char *path, uint64_t oid, int err)
 	}
 }
 
+#define SHA1NAME "user.obj.sha1"
+
+static int get_object_sha1(const char *path, uint8_t *sha1)
+{
+	if (getxattr(path, SHA1NAME, sha1, SHA1_DIGEST_SIZE)
+	    != SHA1_DIGEST_SIZE) {
+		if (errno == ENODATA)
+			sd_debug("sha1 is not cached yet, %s", path);
+		else
+			sd_err("fail to get xattr, %s", path);
+		return -1;
+	}
+
+	return 0;
+}
+
+static int set_object_sha1(const char *path, const uint8_t *sha1)
+{
+	int ret;
+
+	ret = setxattr(path, SHA1NAME, sha1, SHA1_DIGEST_SIZE, 0);
+	if (ret < 0)
+		sd_err("fail to set sha1, %s", path);
+
+	return ret;
+}
+
+static int store_vdi_hash(uint64_t oid, char *path)
+{
+	struct sd_inode *inode = xzalloc(sizeof(*inode));
+	struct siocb iocb = {
+		.epoch = sys_epoch(),
+		.buf = inode,
+		.length = sizeof(*inode),
+	};
+	unsigned char sha1[SHA1_DIGEST_SIZE];
+	int ret;
+
+	ret = default_read(oid, &iocb);
+	if (ret != SD_RES_SUCCESS) {
+		sd_err("failed to read inode object %" PRIx64
+		       "for getting sha1 hash value", oid);
+		goto out;
+	}
+
+	get_buffer_sha1(iocb.buf, iocb.length, sha1);
+
+	ret = set_object_sha1(path, sha1);
+	if (ret) {
+		sd_err("failed to set sha1 value of inode object %" PRIx64,
+		       oid);
+		goto out;
+	}
+
+	sd_debug("sha1 value: %s is stored for the inode object %" PRIx64,
+		 sha1_to_hex(sha1), oid);
+
+out:
+	free(inode);
+	return ret;
+}
+
 int default_write(uint64_t oid, const struct siocb *iocb)
 {
 	int flags = prepare_iocb(oid, iocb, false), fd,
@@ -152,6 +214,12 @@ int default_write(uint64_t oid, const struct siocb *iocb)
 		       iocb->offset, iocb->length, size);
 		ret = err_to_sderr(path, oid, errno);
 		goto out;
+	}
+
+	if (is_vdi_obj(oid)) {
+		ret = store_vdi_hash(oid, path);
+		if (ret)
+			goto out;
 	}
 out:
 	close(fd);
@@ -412,8 +480,16 @@ int default_create_and_write(uint64_t oid, const struct siocb *iocb)
 		ret = err_to_sderr(path, oid, errno);
 		goto out;
 	}
+
+	if (is_vdi_obj(oid)) {
+		ret = store_vdi_hash(oid, path);
+		if (ret)
+			goto out;
+	}
+
 	ret = SD_RES_SUCCESS;
 	objlist_cache_insert(oid);
+
 out:
 	if (ret != SD_RES_SUCCESS)
 		unlink(tmp_path);
@@ -556,33 +632,6 @@ int default_remove_object(uint64_t oid)
 	}
 
 	return SD_RES_SUCCESS;
-}
-
-#define SHA1NAME "user.obj.sha1"
-
-static int get_object_sha1(const char *path, uint8_t *sha1)
-{
-	if (getxattr(path, SHA1NAME, sha1, SHA1_DIGEST_SIZE)
-	    != SHA1_DIGEST_SIZE) {
-		if (errno == ENODATA)
-			sd_debug("sha1 is not cached yet, %s", path);
-		else
-			sd_err("fail to get xattr, %s", path);
-		return -1;
-	}
-
-	return 0;
-}
-
-static int set_object_sha1(const char *path, const uint8_t *sha1)
-{
-	int ret;
-
-	ret = setxattr(path, SHA1NAME, sha1, SHA1_DIGEST_SIZE, 0);
-	if (ret < 0)
-		sd_err("fail to set sha1, %s", path);
-
-	return ret;
 }
 
 static int get_object_path(uint64_t oid, uint32_t epoch, char *path,

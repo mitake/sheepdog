@@ -265,14 +265,41 @@ int default_cleanup(void)
 	return SD_RES_SUCCESS;
 }
 
+static bool is_vdi_object_healthy(uint64_t oid, unsigned char *buf)
+{
+	int ret;
+	char path[PATH_MAX];
+	unsigned char stored_sha1[SHA1_DIGEST_SIZE];
+	unsigned char calced_sha1[SHA1_DIGEST_SIZE];
+
+	assert(is_vdi_obj(oid));
+
+	get_obj_path(oid, path, sizeof(path));
+	ret = get_object_sha1(path, stored_sha1);
+	if (ret < 0) {
+		/* todo: how to handle this case? */
+		sd_err("couldn't found sha1 value of VDI: %"PRIx64, oid);
+		return false;
+	}
+
+	get_buffer_sha1(buf, sizeof(struct sd_inode), calced_sha1);
+
+	if (memcmp(stored_sha1, calced_sha1, SHA1_DIGEST_SIZE)) {
+		sd_err("VDI object %" PRIx64 "is broken", oid);
+		return false;
+	}
+
+	return true;
+}
+
 static int init_vdi_state(uint64_t oid, const char *wd, uint32_t epoch)
 {
 	int ret;
-	struct sd_inode *inode = xzalloc(SD_INODE_HEADER_SIZE);
+	struct sd_inode *inode = xzalloc(sizeof(*inode));
 	struct siocb iocb = {
 		.epoch = epoch,
 		.buf = inode,
-		.length = SD_INODE_HEADER_SIZE,
+		.length = sizeof(*inode),
 	};
 
 	ret = default_read(oid, &iocb);
@@ -282,8 +309,12 @@ static int init_vdi_state(uint64_t oid, const char *wd, uint32_t epoch)
 		goto out;
 	}
 
-	add_vdi_state(oid_to_vid(oid), inode->nr_copies,
-		      vdi_is_snapshot(inode), inode->copy_policy);
+	if (is_vdi_object_healthy(oid, iocb.buf)) {
+		sd_debug("VDI %"PRIx64 " is healthy", oid);
+		add_vdi_state(oid_to_vid(oid), inode->nr_copies,
+			      vdi_is_snapshot(inode), inode->copy_policy);
+	}
+
 	atomic_set_bit(oid_to_vid(oid), sys->vdi_inuse);
 
 	ret = SD_RES_SUCCESS;

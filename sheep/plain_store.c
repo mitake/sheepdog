@@ -313,6 +313,9 @@ static int init_vdi_state(uint64_t oid, const char *wd, uint32_t epoch)
 		sd_debug("VDI %"PRIx64 " is healthy", oid);
 		add_vdi_state(oid_to_vid(oid), inode->nr_copies,
 			      vdi_is_snapshot(inode), inode->copy_policy);
+	} else {
+		sd_warn("VDI %"PRIx64 " is not healthy", oid);
+		new_initial_inode_recovery(oid);
 	}
 
 	atomic_set_bit(oid_to_vid(oid), sys->vdi_inuse);

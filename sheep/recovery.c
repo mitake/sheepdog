@@ -1102,3 +1102,189 @@ void get_recovery_state(struct recovery_state *state)
 	state->nr_finished = rinfo->done;
 	state->nr_total = rinfo->count;
 }
+
+struct initial_inode_recovery_info {
+	uint64_t oid;
+
+	struct sd_node replica_holders[SD_MAX_COPIES];
+	int nr_replica_holders;
+};
+
+struct initial_inode_recovery {
+	struct initial_inode_recovery_info *info;
+	struct list_node list;
+};
+
+static LIST_HEAD(initial_inode_recovery_list);
+static struct sd_mutex initial_inode_recovery_list_lock = SD_MUTEX_INITIALIZER;
+static refcnt_t nr_initial_inode_recovery;
+static eventfd_t initial_inode_recovery_completion;
+
+void new_initial_inode_recovery(uint64_t oid)
+{
+	struct initial_inode_recovery *new = xzalloc(sizeof(*new));
+	struct initial_inode_recovery_info *info = xzalloc(sizeof(*info));
+
+	info->oid = oid;
+	new->info = info;
+
+	sd_mutex_lock(&initial_inode_recovery_list_lock);
+	list_add_tail(&new->list, &initial_inode_recovery_list);
+	sd_mutex_unlock(&initial_inode_recovery_list_lock);
+
+	refcount_inc(&nr_initial_inode_recovery);
+}
+
+void update_initial_inode_recovery(uint64_t oid, struct sd_node *node)
+{
+	struct initial_inode_recovery *recovery;
+
+	list_for_each_entry(recovery, &initial_inode_recovery_list, list) {
+		struct initial_inode_recovery_info *info = recovery->info;
+
+		if (info->oid != oid)
+			continue;
+
+		if (info->nr_replica_holders == SD_MAX_COPIES)
+			panic("too many replica holders of the inode object"
+			      " %"PRIx64, oid);
+
+		info->replica_holders[info->nr_replica_holders++] = *node;
+		return;
+	}
+}
+
+static struct work_queue *initial_inode_recovery_wq;
+
+int prepare_initial_inode_recovery(void)
+{
+	initial_inode_recovery_wq
+		= create_work_queue("initial inode recovery", WQ_DYNAMIC);
+
+	return initial_inode_recovery_wq == NULL;
+}
+
+struct initial_inode_recovery_work {
+	struct initial_inode_recovery_info *info;
+	struct work work;
+};
+
+static void initial_inode_recovery_work_fn(struct work *work)
+{
+	struct sd_req hdr;
+	struct initial_inode_recovery_work *w
+		= container_of(work, struct initial_inode_recovery_work, work);
+	struct initial_inode_recovery_info *info = w->info;
+	struct sd_inode *inode = xzalloc(sizeof(*inode));
+
+	sd_debug("initial inode recovery work for %"PRIx64 " is starting",
+		 info->oid);
+	sd_init_req(&hdr, SD_OP_READ_PEER);
+	hdr.epoch = sys_epoch();
+	hdr.flags = 0;
+	hdr.data_length = sizeof(*inode);
+	hdr.obj.oid = info->oid;
+
+	sd_info("replica holders of VDI %"PRIx64, info->oid);
+	for (int i = 0; i < info->nr_replica_holders; i++)
+		sd_info("\t%d: %s", i, node_to_str(&info->replica_holders[i]));
+
+	for (int i = 0; i < info->nr_replica_holders; i++) {
+		int ret;
+		struct siocb iocb = { };
+		struct sd_node *node = &info->replica_holders[i];
+
+		ret = sheep_exec_req(&node->nid, &hdr, inode);
+		if (ret != SD_RES_SUCCESS) {
+			sd_info("reading from replica candidate %s failed",
+				node_to_str(node));
+			continue;
+		}
+
+		sd_debug("read inode object replica from %s",
+			 node_to_str(node));
+
+		iocb.epoch = hdr.epoch;
+		iocb.buf = (void *)inode;
+		iocb.length = sizeof(*inode);
+		iocb.offset = 0;
+
+		ret = sd_store->write(info->oid, &iocb);
+		if (ret != SD_RES_SUCCESS) {
+			sd_err("writing recovered inode object %"PRIx64
+			       " failed", info->oid);
+			break;	/* we can do nothing any more... */
+		}
+
+		sd_info("recovered broken inode object %"PRIx64" successfully",
+			info->oid);
+
+		goto completed;
+	}
+
+	sd_emerg("inode object %"PRIx64 " is lost completely!", info->oid);
+
+completed:
+	free(inode);
+
+	refcount_dec(&nr_initial_inode_recovery);
+	if (!refcount_read(&nr_initial_inode_recovery))
+		eventfd_xwrite(initial_inode_recovery_completion, 1);
+}
+
+static void initial_inode_recovery_work_done(struct work *work)
+{
+	struct initial_inode_recovery_work *w
+		= container_of(work, struct initial_inode_recovery_work, work);
+	struct initial_inode_recovery_info *info = w->info;
+
+	sd_debug("initial inode recovery work for %"PRIx64 " ends", info->oid);
+
+	free(w->info);
+	free(w);
+}
+
+void run_initial_inode_recovery(void)
+{
+	if (!refcount_read(&nr_initial_inode_recovery)) {
+		sd_info("initial inode recovery isn't required, every inode"
+			" is healthy");
+
+		return;
+	}
+
+	initial_inode_recovery_completion = eventfd(0, 0);
+	if (initial_inode_recovery_completion < 0)
+		panic("creating event fd for notifying completion of initial"
+		      " inode recovery failed: %m");
+
+	/*
+	 * No worker threads call update_initial_inode_recovery() at this point,
+	 * so we don't have to protect this list. The below locking is only for
+	 * defensive purpose.
+	 */
+	sd_mutex_lock(&initial_inode_recovery_list_lock);
+
+	while (!list_empty(&initial_inode_recovery_list)) {
+		struct initial_inode_recovery *recovery =
+			list_first_entry(&initial_inode_recovery_list,
+					 struct initial_inode_recovery, list);
+		struct initial_inode_recovery_work *work = xzalloc(sizeof(*work));
+
+		work->work.fn = initial_inode_recovery_work_fn;
+		work->work.done = initial_inode_recovery_work_done;
+		work->info = recovery->info;
+
+		queue_work(initial_inode_recovery_wq, &work->work);
+
+		list_del(&recovery->list);
+		free(recovery);
+	}
+
+	sd_mutex_unlock(&initial_inode_recovery_list_lock);
+
+	eventfd_xread(initial_inode_recovery_completion);
+	sd_info("initial inode recovery is completed");
+
+	close(initial_inode_recovery_completion);
+}

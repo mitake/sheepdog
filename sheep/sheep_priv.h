@@ -369,6 +369,11 @@ bool oid_in_recovery(uint64_t oid);
 bool node_in_recovery(void);
 void get_recovery_state(struct recovery_state *state);
 
+void new_initial_inode_recovery(uint64_t oid);
+void update_initial_inode_recovery(uint64_t oid, struct sd_node *node);
+int prepare_initial_inode_recovery(void);
+void run_initial_inode_recovery(void);
+
 int read_backend_object(uint64_t oid, char *data, unsigned int datalen,
 		       uint64_t offset);
 int sd_write_object(uint64_t oid, char *data, unsigned int datalen,

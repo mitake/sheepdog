@@ -843,6 +843,12 @@ int main(int argc, char **argv)
 	if (ret)
 		exit(1);
 
+	ret = prepare_initial_inode_recovery();
+	if (ret) {
+		sd_err("failed to prepare initial inode recovery");
+		exit(1);
+	}
+
 	ret = sockfd_init();
 	if (ret)
 		exit(1);

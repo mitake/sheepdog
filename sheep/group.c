@@ -477,6 +477,8 @@ static int get_vdis_from(struct sd_node *node)
 		atomic_set_bit(vs[i].vid, sys->vdi_inuse);
 		add_vdi_state(vs[i].vid, vs[i].nr_copies, vs[i].snapshot,
 			      vs[i].copy_policy);
+
+		update_initial_inode_recovery(vid_to_vdi_oid(vs[i].vid), node);
 	}
 out:
 	free(vs);
@@ -907,6 +909,22 @@ main_fn void sd_accept_handler(const struct sd_node *joined,
 		return;
 
 	update_cluster_info(cinfo, joined, nroot, nr_nodes);
+
+	if (cinfo->status == SD_STATUS_OK) {
+		static int initial_inode_recovery_done;
+
+		if (!initial_inode_recovery_done) {
+			sd_info("invoking initial inode recovery");
+			run_initial_inode_recovery();
+		}
+
+		/*
+		 * We have to do initial inode recovery when cinfo->status
+		 * becomes SD_STATUS_OK first time.
+		 */
+		initial_inode_recovery_done = 1;
+	}
+
 
 	if (node_is_local(joined))
 		/* this output is used for testing */

@@ -327,7 +327,7 @@ grab:
 		 * busy to serve any request that makes other nodes deleted it
 		 * from the sockfd cache. In such cases, we need to add it back.
 		 */
-		if (!revalidate_node(nid))
+		if (!grow_wq || !revalidate_node(nid))
 			return NULL;
 
 		goto grab;

@@ -1,0 +1,38 @@
+#!/bin/bash
+
+# Test vdi repair functionality for corrupted inodes
+
+. ./common
+
+for i in `seq 0 2`; do
+    _start_sheep $i
+done
+
+_wait_for_sheep 3
+
+_cluster_format
+
+$DOG vdi create test 12M
+_vdi_list
+
+echo "original data" | $DOG vdi write test
+
+$DOG cluster shutdown
+
+# single inode object corrupted
+
+_random | dd of=$STORE/0/obj/807c2b2500000000 bs=4096 count=2048 &> /dev/null
+for i in `seq 0 2`; do
+    _start_sheep $i
+done
+
+_wait_for_sheep 3
+
+echo vdi test should be visible
+
+_vdi_list
+
+$DOG vdi read test 0 14
+
+$DOG cluster shutdown
+

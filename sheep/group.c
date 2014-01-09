@@ -892,6 +892,7 @@ main_fn void sd_accept_handler(const struct sd_node *joined,
 {
 	const struct cluster_info *cinfo = opaque;
 	struct sd_node *n;
+	enum sd_status prev_status = sys->cinfo.status;
 
 	if (node_is_local(joined) && !cluster_join_check(cinfo)) {
 		sd_err("failed to join Sheepdog");
@@ -910,10 +911,12 @@ main_fn void sd_accept_handler(const struct sd_node *joined,
 
 	update_cluster_info(cinfo, joined, nroot, nr_nodes);
 
-	if (cinfo->status == SD_STATUS_OK) {
+	if (prev_status == SD_STATUS_WAIT && cinfo->status == SD_STATUS_OK) {
 		static int initial_inode_recovery_done;
 
 		if (!initial_inode_recovery_done) {
+			sd_info("waiting vdi info gathering");
+			wait_get_vdis_done();
 			sd_info("invoking initial inode recovery");
 			run_initial_inode_recovery();
 		}

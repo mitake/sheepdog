@@ -1192,7 +1192,7 @@ static void initial_inode_recovery_work_fn(struct work *work)
 	hdr.data_length = sizeof(*inode);
 	hdr.obj.oid = info->oid;
 
-	sd_info("replica holders of VDI %"PRIx64, info->oid);
+	sd_info("replica holders of VDI %"PRIx64" :", info->oid);
 	for (int i = 0; i < info->nr_replica_holders; i++)
 		sd_info("\t%d: %s", i, node_to_str(&info->replica_holders[i]));
 

@@ -1139,6 +1139,11 @@ void update_initial_inode_recovery(uint64_t oid, struct sd_node *node)
 {
 	struct initial_inode_recovery *recovery;
 
+	sd_debug("new replica holder of VDI %"PRIx64": %s", oid,
+		 node_to_str(node));
+
+	sd_mutex_lock(&initial_inode_recovery_list_lock);
+
 	list_for_each_entry(recovery, &initial_inode_recovery_list, list) {
 		struct initial_inode_recovery_info *info = recovery->info;
 
@@ -1150,8 +1155,10 @@ void update_initial_inode_recovery(uint64_t oid, struct sd_node *node)
 			      " %"PRIx64, oid);
 
 		info->replica_holders[info->nr_replica_holders++] = *node;
-		return;
+		break;
 	}
+
+	sd_mutex_unlock(&initial_inode_recovery_list_lock);
 }
 
 static struct work_queue *initial_inode_recovery_wq;

@@ -23,6 +23,8 @@ static struct sd_option cluster_options[] = {
 	{'f', "force", false, "do not prompt for confirmation"},
 	{'t', "strict", false,
 	 "do not serve write request if number of nodes is not sufficient"},
+	{'i', "inode-hash-check", false,
+	 "format cluster with enabling inode hash check"},
 	{'s', "backend", false, "show backend store information"},
 	{ 0, NULL, false, NULL },
 };
@@ -33,6 +35,7 @@ static struct cluster_cmd_data {
 	bool force;
 	bool show_store;
 	bool strict;
+	bool inode_hash_check;
 	char name[STORE_LEN];
 } cluster_cmd_data;
 
@@ -122,6 +125,8 @@ static int cluster_format(int argc, char **argv)
 	hdr.flags |= SD_FLAG_CMD_WRITE;
 	if (cluster_cmd_data.strict)
 		hdr.cluster.flags |= SD_CLUSTER_FLAG_STRICT;
+	if (cluster_cmd_data.inode_hash_check)
+		hdr.cluster.flags |= SD_CLUSTER_FLAG_INODE_HASH_CHECK;
 
 	printf("using backend %s store\n", store_name);
 	ret = dog_exec_req(&sd_nid, &hdr, store_name);
@@ -557,7 +562,7 @@ static int cluster_check(int argc, char **argv)
 static struct subcommand cluster_cmd[] = {
 	{"info", NULL, "aprhs", "show cluster information",
 	 NULL, CMD_NEED_NODELIST, cluster_info, cluster_options},
-	{"format", NULL, "bctaph", "create a Sheepdog store",
+	{"format", NULL, "bctaphi", "create a Sheepdog store",
 	 NULL, CMD_NEED_NODELIST, cluster_format, cluster_options},
 	{"shutdown", NULL, "aph", "stop Sheepdog",
 	 NULL, 0, cluster_shutdown, cluster_options},
@@ -604,6 +609,9 @@ static int cluster_parser(int ch, const char *opt)
 		break;
 	case 't':
 		cluster_cmd_data.strict = true;
+		break;
+	case 'i':
+		cluster_cmd_data.inode_hash_check = true;
 		break;
 	}
 

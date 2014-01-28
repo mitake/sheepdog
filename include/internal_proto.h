@@ -127,6 +127,8 @@
 #define SD_RES_VDI_NOT_EMPTY    0x92 /* VDI is not empty */
 
 #define SD_CLUSTER_FLAG_STRICT  0x0001 /* Strict mode for write */
+/* check hash value of inode object when it is updated or read */
+#define SD_CLUSTER_FLAG_INODE_HASH_CHECK  0x0002
 
 enum sd_status {
 	SD_STATUS_OK = 1,

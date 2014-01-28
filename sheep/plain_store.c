@@ -117,6 +117,33 @@ static int err_to_sderr(const char *path, uint64_t oid, int err)
 	}
 }
 
+#define SHA1NAME "user.obj.sha1"
+
+static int get_object_sha1(const char *path, uint8_t *sha1)
+{
+	if (getxattr(path, SHA1NAME, sha1, SHA1_DIGEST_SIZE)
+	    != SHA1_DIGEST_SIZE) {
+		if (errno == ENODATA)
+			sd_debug("sha1 is not cached yet, %s", path);
+		else
+			sd_err("fail to get xattr, %s", path);
+		return -1;
+	}
+
+	return 0;
+}
+
+static int set_object_sha1(const char *path, const uint8_t *sha1)
+{
+	int ret;
+
+	ret = setxattr(path, SHA1NAME, sha1, SHA1_DIGEST_SIZE, 0);
+	if (ret < 0)
+		sd_err("fail to set sha1, %s", path);
+
+	return ret;
+}
+
 int default_write(uint64_t oid, const struct siocb *iocb)
 {
 	int flags = prepare_iocb(oid, iocb, false), fd,
@@ -153,6 +180,30 @@ int default_write(uint64_t oid, const struct siocb *iocb)
 		ret = err_to_sderr(path, oid, errno);
 		goto out;
 	}
+
+	if (sys->cinfo.flags & SD_CLUSTER_FLAG_INODE_HASH_CHECK
+	    && is_vdi_obj(oid)) {
+		uint8_t sha1[20];
+		unsigned char *inode_buf;
+
+		inode_buf = xzalloc(SD_INODE_SIZE);
+
+		ret = xread(fd, inode_buf, SD_INODE_SIZE);
+		if (ret != SD_INODE_SIZE) {
+			sd_err("reading inode object failed: %m");
+			ret = err_to_sderr(path, oid, errno);
+			goto hash_check_out;
+		}
+
+		get_buffer_sha1(inode_buf, SD_INODE_SIZE, sha1);
+		ret = set_object_sha1(path, sha1);
+		if (ret < 0)
+			ret = err_to_sderr(path, oid, errno);
+
+hash_check_out:
+		free(inode_buf);
+	}
+
 out:
 	close(fd);
 	return ret;
@@ -309,6 +360,61 @@ int default_read(uint64_t oid, const struct siocb *iocb)
 		ret = default_read_from_path(oid, path, iocb);
 	}
 
+	if (sys->cinfo.flags & SD_CLUSTER_FLAG_INODE_HASH_CHECK
+	    && is_vdi_obj(oid)) {
+		int fd = -1;
+		uint8_t sha1[20], stored_sha1[20];
+		unsigned char *inode_buf;
+
+		inode_buf = xzalloc(SD_INODE_SIZE);
+
+		fd = open(path, O_RDONLY);
+		if (fd < 0) {
+			sd_err("opening a path of inode object (%s) failed: %m",
+			       path);
+			ret = err_to_sderr(path, oid, errno);
+			goto hash_check_out;
+		}
+
+		ret = xread(fd, inode_buf, SD_INODE_SIZE);
+		if (ret != SD_INODE_SIZE) {
+			sd_err("reading inode object failed: %m");
+			ret = err_to_sderr(path, oid, errno);
+			goto hash_check_out;
+		}
+
+		get_buffer_sha1(inode_buf, SD_INODE_SIZE, sha1);
+		ret = set_object_sha1(path, sha1);
+		if (ret < 0) {
+			ret = err_to_sderr(path, oid, errno);
+			goto hash_check_out;
+		}
+
+		ret = get_object_sha1(path, stored_sha1);
+		if (ret < 0) {
+			ret = err_to_sderr(path, oid, errno);
+			goto hash_check_out;
+		}
+
+		if (memcmp(sha1, stored_sha1, SD_INODE_SIZE)) {
+			sd_err("stored sha1 value and caliculated sha1 value"
+			       " of %"PRIx64" donn't match, object seems"
+			       " to be broken", oid);
+			/*
+			 * return SD_RES_NO_OBJ and wait for "dog vdi check"
+			 * TODO: active recovery by sheep process
+			 */
+			ret = SD_RES_NO_OBJ;
+		}
+
+		ret = SD_RES_SUCCESS;
+
+hash_check_out:
+		free(inode_buf);
+		if (0 <= fd)
+			close(fd);
+	}
+
 	return ret;
 }
 
@@ -412,6 +518,19 @@ int default_create_and_write(uint64_t oid, const struct siocb *iocb)
 		ret = err_to_sderr(path, oid, errno);
 		goto out;
 	}
+
+	if (sys->cinfo.flags & SD_CLUSTER_FLAG_INODE_HASH_CHECK
+	    && is_vdi_obj(oid)) {
+		uint8_t sha1[20];
+
+		get_buffer_sha1(iocb->buf, iocb->length, sha1);
+		ret = set_object_sha1(path, sha1);
+		if (ret < 0) {
+			ret = err_to_sderr(path, oid, errno);
+			goto out;
+		}
+	}
+
 	ret = SD_RES_SUCCESS;
 	objlist_cache_insert(oid);
 out:
@@ -556,33 +675,6 @@ int default_remove_object(uint64_t oid)
 	}
 
 	return SD_RES_SUCCESS;
-}
-
-#define SHA1NAME "user.obj.sha1"
-
-static int get_object_sha1(const char *path, uint8_t *sha1)
-{
-	if (getxattr(path, SHA1NAME, sha1, SHA1_DIGEST_SIZE)
-	    != SHA1_DIGEST_SIZE) {
-		if (errno == ENODATA)
-			sd_debug("sha1 is not cached yet, %s", path);
-		else
-			sd_err("fail to get xattr, %s", path);
-		return -1;
-	}
-
-	return 0;
-}
-
-static int set_object_sha1(const char *path, const uint8_t *sha1)
-{
-	int ret;
-
-	ret = setxattr(path, SHA1NAME, sha1, SHA1_DIGEST_SIZE, 0);
-	if (ret < 0)
-		sd_err("fail to set sha1, %s", path);
-
-	return ret;
 }
 
 static int get_object_path(uint64_t oid, uint32_t epoch, char *path,

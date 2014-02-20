@@ -380,6 +380,8 @@ int sd_read_object(uint64_t oid, char *data, unsigned int datalen,
 		   uint64_t offset);
 int sd_remove_object(uint64_t oid);
 int sd_discard_object(uint64_t oid);
+int sd_dec_object_refcnt(uint64_t data_oid, uint32_t generation,
+			 uint32_t refcnt);
 
 struct request_iocb *local_req_init(void);
 int exec_local_req(struct sd_req *rq, void *data);
@@ -435,6 +437,7 @@ int gateway_read_obj(struct request *req);
 int gateway_write_obj(struct request *req);
 int gateway_create_and_write_obj(struct request *req);
 int gateway_remove_obj(struct request *req);
+
 bool is_erasure_oid(uint64_t oid);
 uint8_t local_ec_index(struct vnode_info *vinfo, uint64_t oid);
 

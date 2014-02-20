@@ -468,3 +468,73 @@ int sd_discard_object(uint64_t oid)
 
 	return ret;
 }
+
+int sd_dec_object_refcnt(uint64_t data_oid, uint32_t generation,
+			 uint32_t refcnt)
+{
+	int ret;
+	uint64_t ledger_oid = data_oid_to_ledger_oid(data_oid);
+	uint32_t *ledger = NULL;
+	static uint32_t zero[SD_LEDGER_OBJ_SIZE / sizeof(uint32_t)];
+	static struct sd_mutex lock = SD_MUTEX_INITIALIZER;
+	bool exist = true;
+
+	sd_debug("%" PRId32 ", %" PRId32, generation, refcnt);
+
+	if (generation == 0 && refcnt == 0)
+		return sd_remove_object(data_oid);
+
+	/* we don't allow concurrent updates to the ledger objects */
+	sd_mutex_lock(&lock);
+
+	ledger = xzalloc(SD_LEDGER_OBJ_SIZE);
+	ret = sd_read_object(ledger_oid, (char *)ledger, SD_LEDGER_OBJ_SIZE, 0);
+	if (ret != SD_RES_SUCCESS) {
+		if (ret != SD_RES_NO_OBJ) {
+			sd_err("failed to read ledger object (%"PRIx64"): %s",
+			       ledger_oid, sd_strerror(ret));
+			goto out;
+		}
+
+		/* SD_RES_NO_OBJ: the ledger is not created, initialize */
+		exist = false;
+		ledger[0] = 1;
+	}
+
+	ledger[generation]--;
+	ledger[generation + 1] += refcnt;
+
+	if (memcmp(ledger, zero, SD_LEDGER_OBJ_SIZE) == 0) {
+		/* reclaim object */
+		if (exist) {
+			ret = sd_remove_object(ledger_oid);
+			if (ret != SD_RES_SUCCESS) {
+				sd_err("failed to remove ledger object"
+				       " (%"PRIx64"): %s", data_oid,
+				       sd_strerror(ret));
+
+				goto out;
+			}
+		}
+
+		ret = sd_remove_object(data_oid);
+		if (ret != SD_RES_SUCCESS) {
+			sd_err("failed to remove data object (%"PRIx64"): %s",
+			       data_oid, sd_strerror(ret));
+		}
+	} else {
+		/* update ledger */
+		ret = sd_write_object(ledger_oid, (char *)ledger,
+				      SD_LEDGER_OBJ_SIZE, 0, !exist);
+		if (ret != SD_RES_SUCCESS) {
+			sd_err("failed to %s ledger object (%"PRIx64"): %s",
+			       exist ? "update" : "create", data_oid,
+			       sd_strerror(ret));
+		}
+	}
+out:
+	free(ledger);
+	sd_mutex_unlock(&lock);
+
+	return ret;
+}

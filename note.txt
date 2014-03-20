@@ -1,0 +1,3 @@
+
+The way of updating ledger object in this branch can reduce a number of messages required for decrementing reference count, but it requires chain replication.
+

@@ -231,6 +231,10 @@ static int cluster_get_vdi_info(struct request *req)
 	rsp->vdi.vdi_id = info.vid;
 	rsp->vdi.copies = get_vdi_copy_number(info.vid);
 
+	req->worker_data_length = sizeof(struct node_id);
+	req->worker_data = xzalloc(req->worker_data_length);
+	memcpy(req->worker_data, &sys->this_node.nid, sizeof(struct node_id));
+
 	return ret;
 }
 

@@ -195,6 +195,7 @@ struct epoch_log {
 struct vdi_op_message {
 	struct sd_req req;
 	struct sd_rsp rsp;
+	uint32_t worker_data_start_offset;
 	uint8_t data[0];
 };
 

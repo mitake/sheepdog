@@ -99,6 +99,13 @@ struct request {
 	void *data;
 	unsigned int data_length;
 
+	/*
+	 * worker_data and worker_data_length:
+	 * used for storing data supplied by process_work() of cluster operation
+	 */
+	void *worker_data;
+	unsigned int worker_data_length;
+
 	struct client_info *ci;
 	struct list_node request_list;
 	struct list_node pending_list;

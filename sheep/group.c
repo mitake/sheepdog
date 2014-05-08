@@ -199,7 +199,7 @@ static struct vdi_op_message *prepare_cluster_msg(struct request *req,
 		size_t *sizep)
 {
 	struct vdi_op_message *msg;
-	size_t size;
+	size_t size, worker_offset = 0;
 
 	if (has_process_main(req->op) && req->rq.flags & SD_FLAG_CMD_WRITE)
 		/* notify data that was received from the sender */
@@ -208,14 +208,24 @@ static struct vdi_op_message *prepare_cluster_msg(struct request *req,
 		/* notify data that was set in process_work */
 		size = sizeof(*msg) + req->rp.data_length;
 
+	if (req->worker_data_length) {
+		worker_offset = size;
+		size += req->worker_data_length;
+	}
+
 	assert(size <= SD_MAX_EVENT_BUF_SIZE);
 
 	msg = xzalloc(size);
+	if (worker_offset)
+		msg->worker_data_start_offset = worker_offset;
 	memcpy(&msg->req, &req->rq, sizeof(struct sd_req));
 	memcpy(&msg->rsp, &req->rp, sizeof(struct sd_rsp));
 
 	if (has_process_main(req->op) && size > sizeof(*msg))
 		memcpy(msg->data, req->data, size - sizeof(*msg));
+	if (msg->worker_data_start_offset)
+		memcpy((char *)msg->data + msg->worker_data_start_offset,
+		       req->worker_data, req->worker_data_length);
 
 	*sizep = size;
 	return msg;
@@ -234,6 +244,8 @@ static void cluster_op_done(struct work *work)
 	sd_debug("%s (%p)", op_name(req->op), req);
 
 	msg = prepare_cluster_msg(req, &size);
+	if (req->worker_data_length)
+		free(req->worker_data);
 
 	ret = sys->cdrv->unblock(msg, size);
 	if (ret != SD_RES_SUCCESS) {

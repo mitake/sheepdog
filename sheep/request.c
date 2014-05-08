@@ -138,7 +138,7 @@ static void local_op_done(struct work *work)
 
 	if (has_process_main(req->op)) {
 		req->rp.result = do_process_main(req->op, &req->rq,
-						 &req->rp, req->data);
+						 &req->rp, req->data, NULL);
 	}
 
 	put_request(req);

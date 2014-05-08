@@ -173,7 +173,7 @@ struct vnode_info *get_vnode_info_epoch(uint32_t epoch,
 }
 
 int local_get_node_list(const struct sd_req *req, struct sd_rsp *rsp,
-			void *data)
+			void *data, void *worker_data)
 {
 	int nr_nodes;
 	struct vnode_info *cur_vinfo = get_vnode_info();
@@ -733,7 +733,9 @@ main_fn void sd_notify_handler(const struct sd_node *sender, void *data,
 	}
 
 	if (ret == SD_RES_SUCCESS && has_process_main(op))
-		ret = do_process_main(op, &msg->req, &msg->rsp, msg->data);
+		ret = do_process_main(op, &msg->req, &msg->rsp, msg->data,
+				      (char *)msg->data +
+				      msg->worker_data_start_offset);
 
 	if (req) {
 		msg->rsp.result = ret;

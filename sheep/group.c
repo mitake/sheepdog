@@ -732,10 +732,14 @@ main_fn void sd_notify_handler(const struct sd_node *sender, void *data,
 		list_del(&req->pending_list);
 	}
 
-	if (ret == SD_RES_SUCCESS && has_process_main(op))
+	if (ret == SD_RES_SUCCESS && has_process_main(op)) {
+		if (msg->worker_data_start_offset)
+			msg->req.data_length = msg->worker_data_start_offset;
+
 		ret = do_process_main(op, &msg->req, &msg->rsp, msg->data,
 				      (char *)msg->data +
 				      msg->worker_data_start_offset);
+	}
 
 	if (req) {
 		msg->rsp.result = ret;

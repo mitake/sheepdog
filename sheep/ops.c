@@ -239,6 +239,20 @@ static int cluster_get_vdi_info(struct request *req)
 	return ret;
 }
 
+static int cluster_lock_vdi(const struct sd_req *req, struct sd_rsp *rsp,
+			    void *data, void *worker_data)
+{
+	struct node_id *id = worker_data;
+	struct sd_node sdn;
+
+	memset(&sdn, 0,sizeof(sdn));
+	memcpy(&sdn.nid, id, sizeof(*id));
+
+	sd_info("node: %s is locking vdi", node_to_str(&sdn));
+
+	return SD_RES_SUCCESS;
+}
+
 static int remove_epoch(uint32_t epoch)
 {
 	int ret;
@@ -1161,6 +1175,7 @@ static struct sd_op_template sd_ops[] = {
 		.name = "LOCK_VDI",
 		.type = SD_OP_TYPE_CLUSTER,
 		.process_work = cluster_get_vdi_info,
+		.process_main = cluster_lock_vdi,
 	},
 
 	[SD_OP_REWEIGHT] = {

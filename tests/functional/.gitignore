@@ -3,3 +3,9 @@
 *.full
 check.log
 check.time
+
+# 096 related files
+096_orig_devfiles
+096_login_devfiles
+096_diff_devfiles
+multipath.conf

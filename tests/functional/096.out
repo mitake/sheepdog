@@ -1,0 +1,8 @@
+QA output created by 095
+using backend plain store
+Try `iscsiadm --help' for more information.
+Logging in to [iface: default, target: iqn.2014-06.org.sheepdog-project, portal: 127.0.0.1,3260] (multiple)
+Logging in to [iface: default, target: iqn.2014-06.org.sheepdog-project, portal: 127.0.0.1,3261] (multiple)
+Login to [iface: default, target: iqn.2014-06.org.sheepdog-project, portal: 127.0.0.1,3260] successful.
+Login to [iface: default, target: iqn.2014-06.org.sheepdog-project, portal: 127.0.0.1,3261] successful.
+/dev/mapper/sheepdog-iscsi: block special

@@ -108,6 +108,7 @@ struct request {
 	int local_req_efd;
 
 	uint64_t local_oid;
+	int8_t local_ec_index;
 
 	struct vnode_info *vinfo;
 
@@ -379,7 +380,7 @@ void wait_get_vdis_done(void);
 int get_nr_copies(struct vnode_info *vnode_info);
 
 void wakeup_requests_on_epoch(void);
-void wakeup_requests_on_oid(uint64_t oid);
+void wakeup_requests_on_obj(uint64_t oid, int8_t ec_index);
 void wakeup_all_requests(void);
 void resume_suspended_recovery(void);
 
@@ -417,7 +418,7 @@ int get_obj_list(const struct sd_req *, struct sd_rsp *, void *);
 int objlist_cache_cleanup(uint32_t vid);
 
 int start_recovery(struct vnode_info *cur_vinfo, struct vnode_info *, bool);
-bool oid_in_recovery(uint64_t oid);
+bool oid_in_recovery(uint64_t oid, int8_t ec_index);
 bool node_in_recovery(void);
 void get_recovery_state(struct recovery_state *state);
 
@@ -441,8 +442,8 @@ void local_request_init(void);
 
 int prealloc(int fd, uint32_t size);
 
-int objlist_cache_insert(uint64_t oid);
-void objlist_cache_remove(uint64_t oid);
+int objlist_cache_insert(uint64_t oid, int ec_index);
+void objlist_cache_remove(uint64_t oid, int ec_index);
 
 void put_request(struct request *req);
 void get_request(struct request *req);
@@ -608,5 +609,15 @@ static inline int nfs_init(const char *options)
 	return 0;
 }
 #endif
+
+/*
+ * struct objlist_cache_unit:
+ * shared by object_list_cache.c and recovery.c
+ */
+struct objlist_cache_unit {
+	uint64_t oid;
+	int32_t ec_index;
+	int32_t __pad;
+};
 
 #endif

@@ -15,6 +15,7 @@
 
 struct objlist_cache_entry {
 	uint64_t oid;
+	int ec_index;
 	struct rb_node node;
 };
 
@@ -22,7 +23,7 @@ struct objlist_cache {
 	int tree_version;
 	int buf_version;
 	int cache_size;
-	uint64_t *buf;
+	struct objlist_cache_unit *buf;
 	struct rb_root root;
 	struct sd_rw_lock lock;
 };
@@ -41,7 +42,11 @@ static struct objlist_cache obj_list_cache = {
 static int objlist_cache_cmp(const struct objlist_cache_entry *a,
 			     const struct objlist_cache_entry *b)
 {
-	return intcmp(a->oid, b->oid);
+	int cmp = intcmp(a->oid, b->oid);
+	if (cmp)
+		return cmp;
+
+	return intcmp(a->ec_index, b->ec_index);
 }
 
 static struct objlist_cache_entry *objlist_cache_rb_insert(struct rb_root *root,
@@ -50,9 +55,11 @@ static struct objlist_cache_entry *objlist_cache_rb_insert(struct rb_root *root,
 	return rb_insert(root, new, node, objlist_cache_cmp);
 }
 
-static int objlist_cache_rb_remove(struct rb_root *root, uint64_t oid)
+static int objlist_cache_rb_remove(struct rb_root *root, uint64_t oid,
+				   int ec_index)
 {
-	struct objlist_cache_entry *entry,  key = { .oid = oid  };
+	struct objlist_cache_entry *entry,  key =
+		{ .oid = oid, .ec_index = ec_index  };
 
 	entry = rb_search(root, &key, node, objlist_cache_cmp);
 	if (!entry)
@@ -64,22 +71,23 @@ static int objlist_cache_rb_remove(struct rb_root *root, uint64_t oid)
 	return 0;
 }
 
-void objlist_cache_remove(uint64_t oid)
+void objlist_cache_remove(uint64_t oid, int ec_index)
 {
 	sd_write_lock(&obj_list_cache.lock);
-	if (!objlist_cache_rb_remove(&obj_list_cache.root, oid)) {
+	if (!objlist_cache_rb_remove(&obj_list_cache.root, oid, ec_index)) {
 		obj_list_cache.cache_size--;
 		obj_list_cache.tree_version++;
 	}
 	sd_rw_unlock(&obj_list_cache.lock);
 }
 
-int objlist_cache_insert(uint64_t oid)
+int objlist_cache_insert(uint64_t oid, int ec_index)
 {
 	struct objlist_cache_entry *entry, *p;
 
 	entry = xzalloc(sizeof(*entry));
 	entry->oid = oid;
+	entry->ec_index = ec_index;
 	rb_init_node(&entry->node);
 
 	sd_write_lock(&obj_list_cache.lock);
@@ -90,6 +98,7 @@ int objlist_cache_insert(uint64_t oid)
 		obj_list_cache.cache_size++;
 		obj_list_cache.tree_version++;
 	}
+
 	sd_rw_unlock(&obj_list_cache.lock);
 
 	return 0;
@@ -113,20 +122,26 @@ int get_obj_list(const struct sd_req *hdr, struct sd_rsp *rsp, void *data)
 
 	obj_list_cache.buf_version = obj_list_cache.tree_version;
 	obj_list_cache.buf = xrealloc(obj_list_cache.buf,
-				obj_list_cache.cache_size * sizeof(uint64_t));
+				      obj_list_cache.cache_size *
+				      sizeof(struct objlist_cache_unit));
 
 	rb_for_each_entry(entry, &obj_list_cache.root, node) {
-		obj_list_cache.buf[nr++] = entry->oid;
+		obj_list_cache.buf[nr].oid = entry->oid;
+		obj_list_cache.buf[nr].ec_index = entry->ec_index;
+
+		nr++;
 	}
 
 out:
-	if (hdr->data_length < obj_list_cache.cache_size * sizeof(uint64_t)) {
+	if (hdr->data_length < obj_list_cache.cache_size *
+	    sizeof(struct objlist_cache_unit)) {
 		sd_rw_unlock(&obj_list_cache.lock);
 		sd_err("GET_OBJ_LIST buffer too small");
 		return SD_RES_BUFFER_SMALL;
 	}
 
-	rsp->data_length = obj_list_cache.cache_size * sizeof(uint64_t);
+	rsp->data_length = obj_list_cache.cache_size *
+		sizeof(struct objlist_cache_unit);
 	memcpy(data, obj_list_cache.buf, rsp->data_length);
 	sd_rw_unlock(&obj_list_cache.lock);
 	return SD_RES_SUCCESS;

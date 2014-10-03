@@ -29,14 +29,17 @@ struct recovery_list_work {
 	struct recovery_work base;
 
 	uint64_t count;
-	uint64_t *oids;
+	struct objlist_cache_unit *units;
 };
 
 /* for recovering objects */
 struct recovery_obj_work {
 	struct recovery_work base;
 
-	uint64_t oid; /* the object to be recovered */
+	/* oid and ec_index: the object to be recovered */
+	uint64_t oid;
+	int32_t ec_index;
+
 	bool stop;
 
 	/* local replica in the stale directory */
@@ -65,10 +68,10 @@ struct recovery_info {
 	bool notify_complete;
 
 	uint64_t count;
-	uint64_t *oids;
-	uint64_t *prio_oids;
-	uint64_t nr_prio_oids;
-	uint64_t nr_scheduled_prio_oids;
+	struct objlist_cache_unit *units;
+	struct objlist_cache_unit *prio_units;
+	uint64_t nr_prio_units;
+	uint64_t nr_scheduled_prio_units;
 
 	struct vnode_info *old_vinfo;
 	struct vnode_info *cur_vinfo;
@@ -84,15 +87,16 @@ static main_thread(struct recovery_info *) current_rinfo;
 static void queue_recovery_work(struct recovery_info *rinfo);
 
 /* Dynamically grown list buffer default as 4M (2T storage) */
-#define DEFAULT_LIST_BUFFER_SIZE (UINT64_C(1) << 22)
+#define DEFAULT_LIST_BUFFER_SIZE (sizeof(struct objlist_cache_unit) << 22)
 static size_t list_buffer_size = DEFAULT_LIST_BUFFER_SIZE;
 
-static int obj_cmp(const uint64_t *oid1, const uint64_t *oid2)
+static int obj_cmp(const struct objlist_cache_unit *unit1,
+		   const struct objlist_cache_unit *unit2)
 {
-	const uint64_t hval1 = sd_hash_oid(*oid1);
-	const uint64_t hval2 = sd_hash_oid(*oid2);
-
-	return intcmp(hval1, hval2);
+	int cmp = intcmp(unit1->oid, unit2->oid);
+	if (cmp)
+		return cmp;
+	return intcmp(unit1->ec_index, unit2->ec_index);
 }
 
 static inline bool node_is_gateway_only(void)
@@ -581,28 +585,33 @@ bool node_in_recovery(void)
 	return main_thread_get(current_rinfo) != NULL;
 }
 
-static inline void prepare_schedule_oid(uint64_t oid)
+static inline void prepare_schedule_oid(uint64_t oid, int32_t ec_index)
 {
 	struct recovery_info *rinfo = main_thread_get(current_rinfo);
+	struct objlist_cache_unit unit = { .oid = oid, .ec_index = ec_index };
 
-	if (xlfind(&oid, rinfo->prio_oids, rinfo->nr_prio_oids, oid_cmp)) {
-		sd_debug("%" PRIx64 " has been already in prio_oids", oid);
+	if (xlfind(&unit, rinfo->prio_units, rinfo->nr_prio_units, obj_cmp)) {
+		sd_debug("%" PRIx64 ": %d has been already in prio_units",
+			 oid, ec_index);
 		return;
 	}
 
-	rinfo->nr_prio_oids++;
-	rinfo->prio_oids = xrealloc(rinfo->prio_oids,
-				    rinfo->nr_prio_oids * sizeof(uint64_t));
-	rinfo->prio_oids[rinfo->nr_prio_oids - 1] = oid;
-	sd_debug("%"PRIx64" nr_prio_oids %"PRIu64, oid, rinfo->nr_prio_oids);
+	rinfo->nr_prio_units++;
+	rinfo->prio_units = xrealloc(rinfo->prio_units,
+				     rinfo->nr_prio_units *
+				     sizeof(struct objlist_cache_unit));
+	rinfo->prio_units[rinfo->nr_prio_units - 1] = unit;
+	sd_debug("%"PRIx64": %d nr_prio_units %"PRIu64, oid, ec_index,
+		 rinfo->nr_prio_units);
 
 	resume_suspended_recovery();
 }
 
-main_fn bool oid_in_recovery(uint64_t oid)
+main_fn bool oid_in_recovery(uint64_t oid, int8_t ec_index)
 {
 	struct recovery_info *rinfo = main_thread_get(current_rinfo);
 	struct vnode_info *cur;
+	struct objlist_cache_unit unit = { .oid = oid, .ec_index = ec_index};
 
 	if (!node_in_recovery())
 		return false;
@@ -625,18 +634,18 @@ main_fn bool oid_in_recovery(uint64_t oid)
 		/* oid is not recovered yet */
 		break;
 	case RW_RECOVER_OBJ:
-		if (xlfind(&oid, rinfo->oids, rinfo->done, oid_cmp)) {
+		if (xlfind(&unit, rinfo->units, rinfo->done, obj_cmp)) {
 			sd_debug("%" PRIx64 " has been already recovered", oid);
 			return false;
 		}
 
-		if (xlfind(&oid, rinfo->oids + rinfo->done,
-			   rinfo->next - rinfo->done, oid_cmp)) {
+		if (xlfind(&unit, rinfo->units + rinfo->done,
+			   rinfo->next - rinfo->done, obj_cmp)) {
 			if (rinfo->suspended)
 				break;
 			/*
 			 * When recovery is not suspended,
-			 * rinfo->oids[rinfo->done .. rinfo->next) is currently
+			 * rinfo->units[rinfo->done .. rinfo->next) is currently
 			 * being recovered and no need to call
 			 * prepare_schedule_oid().
 			 */
@@ -648,8 +657,8 @@ main_fn bool oid_in_recovery(uint64_t oid)
 		 *
 		 * FIXME: do we need more efficient yet complex data structure?
 		 */
-		if (xlfind(&oid, rinfo->oids + rinfo->next,
-			   rinfo->count - rinfo->next + 1, oid_cmp))
+		if (xlfind(&unit, rinfo->units + rinfo->next,
+			   rinfo->count - rinfo->next + 1, obj_cmp))
 			break;
 
 		/*
@@ -663,7 +672,7 @@ main_fn bool oid_in_recovery(uint64_t oid)
 		return false;
 	}
 
-	prepare_schedule_oid(oid);
+	prepare_schedule_oid(oid, ec_index);
 	return true;
 }
 
@@ -678,7 +687,7 @@ static void free_recovery_list_work(struct recovery_list_work *rlw)
 {
 	put_vnode_info(rlw->base.cur_vinfo);
 	put_vnode_info(rlw->base.old_vinfo);
-	free(rlw->oids);
+	free(rlw->units);
 	free(rlw);
 }
 
@@ -693,8 +702,8 @@ static void free_recovery_info(struct recovery_info *rinfo)
 {
 	put_vnode_info(rinfo->cur_vinfo);
 	put_vnode_info(rinfo->old_vinfo);
-	free(rinfo->oids);
-	free(rinfo->prio_oids);
+	free(rinfo->units);
+	free(rinfo->prio_units);
 	for (int i = 0; i < rinfo->max_epoch; i++)
 		put_vnode_info(rinfo->vinfo_array[i]);
 	free(rinfo->vinfo_array);
@@ -778,10 +787,12 @@ static inline void finish_recovery(struct recovery_info *rinfo)
 	sd_debug("recovery complete: new epoch %"PRIu32, recovered_epoch);
 }
 
-static inline bool oid_in_prio_oids(struct recovery_info *rinfo, uint64_t oid)
+static inline bool obj_in_prio_units(struct recovery_info *rinfo, uint64_t oid,
+				     int32_t ec_index)
 {
-	for (uint64_t i = 0; i < rinfo->nr_prio_oids; i++)
-		if (rinfo->prio_oids[i] == oid)
+	for (uint64_t i = 0; i < rinfo->nr_prio_units; i++)
+		if (rinfo->prio_units[i].oid == oid &&
+			rinfo->prio_units[i].ec_index == ec_index)
 			return true;
 	return false;
 }
@@ -794,39 +805,41 @@ static inline bool oid_in_prio_oids(struct recovery_info *rinfo, uint64_t oid)
  * we just move rw->prio_oids in between:
  *   new_oids = [0..rw->next - 1] + [rw->prio_oids] + [rw->next]
  */
-static inline void finish_schedule_oids(struct recovery_info *rinfo)
+static inline void finish_schedule_units(struct recovery_info *rinfo)
 {
 	uint64_t i, nr_recovered = rinfo->next, new_idx;
-	uint64_t *new_oids;
+	struct objlist_cache_unit *new_units;
 
-	/* If I am the last oid, done */
+	/* If I am the last unit, done */
 	if (nr_recovered == rinfo->count - 1)
 		goto done;
 
-	new_oids = xmalloc(list_buffer_size);
-	memcpy(new_oids, rinfo->oids, nr_recovered * sizeof(uint64_t));
-	memcpy(new_oids + nr_recovered, rinfo->prio_oids,
-	       rinfo->nr_prio_oids * sizeof(uint64_t));
-	new_idx = nr_recovered + rinfo->nr_prio_oids;
+	new_units = xmalloc(list_buffer_size);
+	memcpy(new_units, rinfo->units, nr_recovered *
+	       sizeof(struct objlist_cache_unit));
+	memcpy(new_units + nr_recovered, rinfo->prio_units,
+	       rinfo->nr_prio_units * sizeof(struct objlist_cache_unit));
+	new_idx = nr_recovered + rinfo->nr_prio_units;
 
 	for (i = rinfo->next; i < rinfo->count; i++) {
-		if (oid_in_prio_oids(rinfo, rinfo->oids[i]))
+		if (obj_in_prio_units(rinfo, rinfo->units[i].oid,
+				      rinfo->units[i].ec_index))
 			continue;
-		new_oids[new_idx++] = rinfo->oids[i];
+		new_units[new_idx++] = rinfo->units[i];
 	}
 	/* rw->count should eq new_idx, otherwise something is wrong */
-	sd_debug("%snr_recovered %" PRIu64 ", nr_prio_oids %" PRIu64 ", count %"
-		 PRIu64 " = new %" PRIu64,
+	sd_debug("%snr_recovered %" PRIu64 ", nr_prio_units %" PRIu64 ", count"
+		 " %"PRIu64 " = new %" PRIu64,
 		 rinfo->count == new_idx ? "" : "WARN: ", nr_recovered,
-		 rinfo->nr_prio_oids, rinfo->count, new_idx);
+		 rinfo->nr_prio_units, rinfo->count, new_idx);
 
-	free(rinfo->oids);
-	rinfo->oids = new_oids;
+	free(rinfo->units);
+	rinfo->units = new_units;
 done:
-	free(rinfo->prio_oids);
-	rinfo->prio_oids = NULL;
-	rinfo->nr_scheduled_prio_oids += rinfo->nr_prio_oids;
-	rinfo->nr_prio_oids = 0;
+	free(rinfo->prio_units);
+	rinfo->prio_units = NULL;
+	rinfo->nr_scheduled_prio_units += rinfo->nr_prio_units;
+	rinfo->nr_prio_units = 0;
 }
 
 /*
@@ -838,7 +851,7 @@ done:
  */
 static bool has_scheduled_objects(struct recovery_info *rinfo)
 {
-	return rinfo->done < rinfo->nr_scheduled_prio_oids;
+	return rinfo->done < rinfo->nr_scheduled_prio_units;
 }
 
 static void recover_next_object(struct recovery_info *rinfo)
@@ -846,8 +859,8 @@ static void recover_next_object(struct recovery_info *rinfo)
 	if (run_next_rw())
 		return;
 
-	if (rinfo->nr_prio_oids)
-		finish_schedule_oids(rinfo);
+	if (rinfo->nr_prio_units)
+		finish_schedule_units(rinfo);
 
 	if (sys->cinfo.disable_recovery && !has_scheduled_objects(rinfo)) {
 		sd_debug("suspended");
@@ -884,13 +897,20 @@ static void recover_object_main(struct work *work)
 						     base);
 	struct recovery_info *rinfo = main_thread_get(current_rinfo);
 
-	/* ->oids[done, next] is out of order since finish order is random */
-	if (rinfo->oids[rinfo->done] != row->oid) {
-		uint64_t *p = xlfind(&row->oid, rinfo->oids + rinfo->done,
-				     rinfo->next - rinfo->done, oid_cmp);
+	/* ->units[done, next] is out of order since finish order is random */
+	if (rinfo->units[rinfo->done].oid != row->oid ||
+	    rinfo->units[rinfo->done].ec_index != row->ec_index) {
+		struct objlist_cache_unit unit = { .oid = row->oid,
+						   .ec_index = row->ec_index };
 
-		*p = rinfo->oids[rinfo->done];
-		rinfo->oids[rinfo->done] = row->oid;
+		struct objlist_cache_unit *p = xlfind(&unit,
+						      rinfo->units +
+						      rinfo->done,
+						      rinfo->next -
+						      rinfo->done, obj_cmp);
+
+		*p = rinfo->units[rinfo->done];
+		rinfo->units[rinfo->done] = unit;
 	}
 	rinfo->done++;
 
@@ -899,13 +919,13 @@ static void recover_object_main(struct work *work)
 		return;
 	}
 
-	wakeup_requests_on_oid(row->oid);
+	wakeup_requests_on_obj(row->oid, row->ec_index);
 
 	if (!(rinfo->done % DIV_ROUND_UP(rinfo->count, 100)))
 		sd_info("object recovery progress %3.0lf%% ",
 			(double)rinfo->done / rinfo->count * 100);
-	sd_debug("object %"PRIx64" is recovered (%"PRIu64"/%"PRIu64")",
-		row->oid, rinfo->done, rinfo->count);
+	sd_debug("object %"PRIx64":%d is recovered (%"PRIu64"/%"PRIu64")",
+		 row->oid, row->ec_index, rinfo->done, rinfo->count);
 
 	if (rinfo->done >= rinfo->count)
 		goto finish_recovery;
@@ -945,8 +965,8 @@ static void finish_object_list(struct work *work)
 
 	rinfo->state = RW_RECOVER_OBJ;
 	rinfo->count = rlw->count;
-	rinfo->oids = rlw->oids;
-	rlw->oids = NULL;
+	rinfo->units = rlw->units;
+	rlw->units = NULL;
 	free_recovery_list_work(rlw);
 
 	if (run_next_rw())
@@ -963,13 +983,14 @@ static void finish_object_list(struct work *work)
 }
 
 /* Fetch the object list from all the nodes in the cluster */
-static uint64_t *fetch_object_list(struct sd_node *e, uint32_t epoch,
-				   size_t *nr_oids)
+static struct objlist_cache_unit *fetch_object_list(struct sd_node *e,
+						    uint32_t epoch,
+						    size_t *nr_units)
 {
 	struct sd_req hdr;
 	struct sd_rsp *rsp = (struct sd_rsp *)&hdr;
 	size_t buf_size = list_buffer_size;
-	uint64_t *buf = xmalloc(buf_size);
+	struct objlist_cache_unit *buf = xmalloc(buf_size);
 	int ret;
 
 	sd_debug("%s", addr_to_str(e->nid.addr, e->nid.port));
@@ -996,14 +1017,15 @@ retry:
 		return NULL;
 	}
 
-	*nr_oids = rsp->data_length / sizeof(uint64_t);
-	sd_debug("%zu", *nr_oids);
+	*nr_units = rsp->data_length / sizeof(struct objlist_cache_unit);
+	sd_debug("%zu", *nr_units);
 	return buf;
 }
 
 /* Screen out objects that don't belong to this node */
 static void screen_object_list(struct recovery_list_work *rlw,
-			       uint64_t *oids, size_t nr_oids)
+			       struct objlist_cache_unit *units,
+			       size_t nr_units)
 {
 	struct recovery_work *rw = &rlw->base;
 	const struct sd_vnode *vnodes[SD_MAX_COPIES];
@@ -1011,30 +1033,33 @@ static void screen_object_list(struct recovery_list_work *rlw,
 	uint64_t nr_objs;
 	uint64_t i, j;
 
-	for (i = 0; i < nr_oids; i++) {
-		if (xbsearch(&oids[i], rlw->oids, old_count, obj_cmp))
+	for (i = 0; i < nr_units; i++) {
+		if (xbsearch(&units[i], rlw->units, old_count, obj_cmp))
 			/* the object is already scheduled to be recovered */
 			continue;
 
-		nr_objs = get_obj_copy_number(oids[i], rw->cur_vinfo->nr_zones);
+		nr_objs = get_obj_copy_number(units[i].oid,
+					      rw->cur_vinfo->nr_zones);
 
-		oid_to_vnodes(oids[i], &rw->cur_vinfo->vroot, nr_objs, vnodes);
+		oid_to_vnodes(units[i].oid, &rw->cur_vinfo->vroot, nr_objs,
+			      vnodes);
 		for (j = 0; j < nr_objs; j++) {
 			if (!vnode_is_local(vnodes[j]))
 				continue;
 
-			rlw->oids[rlw->count++] = oids[i];
+			rlw->units[rlw->count++] = units[i];
 			/* enlarge the list buffer if full */
-			if (rlw->count == list_buffer_size / sizeof(uint64_t)) {
+			if (rlw->count == list_buffer_size /
+			    sizeof(struct objlist_cache_unit)) {
 				list_buffer_size *= 2;
-				rlw->oids = xrealloc(rlw->oids,
+				rlw->units = xrealloc(rlw->units,
 						     list_buffer_size);
 			}
 			break;
 		}
 	}
 
-	xqsort(rlw->oids, rlw->count, obj_cmp);
+	xqsort(rlw->units, rlw->count, obj_cmp);
 }
 
 /* Prepare the object list that belongs to this node */
@@ -1047,7 +1072,7 @@ static void prepare_object_list(struct work *work)
 						      base);
 	int nr_nodes = rw->cur_vinfo->nr_nodes;
 	int start = random() % nr_nodes, i, end = nr_nodes;
-	uint64_t *oids;
+	struct objlist_cache_unit *units;
 	struct sd_node *nodes;
 
 	if (node_is_gateway_only())
@@ -1061,7 +1086,7 @@ static void prepare_object_list(struct work *work)
 again:
 	/* We need to start at random node for better load balance */
 	for (i = start; i < end; i++) {
-		size_t nr_oids;
+		size_t nr_units;
 		struct sd_node *node = nodes + i;
 
 		if (uatomic_read(&next_rinfo)) {
@@ -1069,11 +1094,11 @@ again:
 			goto out;
 		}
 
-		oids = fetch_object_list(node, rw->epoch, &nr_oids);
-		if (!oids)
+		units = fetch_object_list(node, rw->epoch, &nr_units);
+		if (!units)
 			continue;
-		screen_object_list(rlw, oids, nr_oids);
-		free(oids);
+		screen_object_list(rlw, units, nr_units);
+		free(units);
 	}
 
 	if (start != 0) {
@@ -1143,7 +1168,7 @@ static void queue_recovery_work(struct recovery_info *rinfo)
 	switch (rinfo->state) {
 	case RW_PREPARE_LIST:
 		rlw = xzalloc(sizeof(*rlw));
-		rlw->oids = xmalloc(list_buffer_size);
+		rlw->units = xmalloc(list_buffer_size);
 
 		rw = &rlw->base;
 		rw->work.fn = prepare_object_list;
@@ -1151,7 +1176,8 @@ static void queue_recovery_work(struct recovery_info *rinfo)
 		break;
 	case RW_RECOVER_OBJ:
 		row = xzalloc(sizeof(*row));
-		row->oid = rinfo->oids[rinfo->next];
+		row->oid = rinfo->units[rinfo->next].oid;
+		row->ec_index = rinfo->units[rinfo->next].ec_index;
 
 		rw = &row->base;
 		rw->work.fn = recover_object_work;

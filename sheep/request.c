@@ -209,7 +209,7 @@ static bool request_in_recovery(struct request *req)
 		 */
 		return false;
 
-	if (oid_in_recovery(req->local_oid)) {
+	if (oid_in_recovery(req->local_oid, req->local_ec_index)) {
 		sd_debug("%"PRIx64" wait on oid", req->local_oid);
 		sleep_on_wait_queue(req);
 		return true;
@@ -255,7 +255,7 @@ void wakeup_requests_on_epoch(void)
 }
 
 /* Wakeup the requests on the oid that was previously being recovered */
-void wakeup_requests_on_oid(uint64_t oid)
+void wakeup_requests_on_obj(uint64_t oid, int8_t ec_index)
 {
 	struct request *req;
 	LIST_HEAD(pending_list);
@@ -263,9 +263,11 @@ void wakeup_requests_on_oid(uint64_t oid)
 	list_splice_init(&sys->req_wait_queue, &pending_list);
 
 	list_for_each_entry(req, &pending_list, request_list) {
-		if (req->local_oid != oid)
+		if (req->local_oid != oid ||
+		    req->local_ec_index != ec_index)
 			continue;
-		sd_debug("retry %" PRIx64, req->local_oid);
+		sd_debug("retry %" PRIx64": %d", req->local_oid,
+			 req->local_ec_index);
 		del_requeue_request(req);
 	}
 	list_splice_init(&pending_list, &sys->req_wait_queue);
@@ -287,6 +289,7 @@ void wakeup_all_requests(void)
 static void queue_peer_request(struct request *req)
 {
 	req->local_oid = req->rq.obj.oid;
+	req->local_ec_index = req->rq.obj.ec_index;
 	if (req->local_oid) {
 		if (check_request_epoch(req) < 0)
 			return;
@@ -322,8 +325,10 @@ static void queue_gateway_request(struct request *req)
 {
 	struct sd_req *hdr = &req->rq;
 
-	if (is_access_local(req, hdr->obj.oid))
+	if (is_access_local(req, hdr->obj.oid)) {
 		req->local_oid = hdr->obj.oid;
+		req->local_ec_index = hdr->obj.ec_index;
+	}
 
 	/*
 	 * If we go for cache object, we don't care if it is being recovered

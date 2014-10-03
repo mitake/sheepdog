@@ -297,7 +297,7 @@ static int init_objlist_and_vdi_bitmap(uint64_t oid, const char *wd,
 				       void *arg)
 {
 	int ret;
-	objlist_cache_insert(oid);
+	objlist_cache_insert(oid, ec_index);
 
 	if (is_vdi_obj(oid)) {
 		sd_debug("found the VDI object %" PRIx64" epoch %"PRIu32
@@ -474,7 +474,7 @@ int default_create_and_write(uint64_t oid, const struct siocb *iocb)
 	}
 
 	ret = SD_RES_SUCCESS;
-	objlist_cache_insert(oid);
+	objlist_cache_insert(oid, iocb->ec_index);
 out:
 	if (ret != SD_RES_SUCCESS)
 		unlink(tmp_path);

@@ -965,7 +965,7 @@ static int peer_remove_obj(struct request *req)
 	uint64_t oid = req->rq.obj.oid;
 	uint8_t ec_index = req->rq.obj.ec_index;
 
-	objlist_cache_remove(oid);
+	objlist_cache_remove(oid, ec_index);
 
 	return sd_store->remove_object(oid, ec_index);
 }

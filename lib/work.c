@@ -33,6 +33,10 @@
 #include "work.h"
 #include "event.h"
 
+#ifdef USE_URCU
+#include <urcu.h>
+#endif
+
 /*
  * The protection period from shrinking work queue.  This is necessary
  * to avoid many calls of pthread_create.  Without it, threads are
@@ -308,6 +312,10 @@ static void *worker_routine(void *arg)
 	struct work *work;
 	int tid = gettid();
 
+#ifdef USE_URCU
+	rcu_register_thread();
+#endif
+
 	set_thread_name(wi->name, (wi->tc != WQ_ORDERED));
 
 	trace_set_tid_map(tid);
@@ -345,6 +353,10 @@ retest:
 
 		eventfd_xwrite(efd, 1);
 	}
+
+#ifdef USE_URCU
+	rcu_unregister_thread();
+#endif
 
 	pthread_exit(NULL);
 }
@@ -443,11 +455,18 @@ static void *thread_starter(void *arg)
 	struct thread_args *args = (struct thread_args *)arg;
 	void *ret;
 
+#ifdef USE_URCU
+	rcu_register_thread();
+#endif
+
 	set_thread_name(args->name, args->show_idx);
 	ret = args->start_routine(args->arg);
 	free(arg);
 
-	return ret;
+#ifdef USE_URCU
+	rcu_unregister_thread();
+#endif
+	pthread_exit(ret);
 }
 
 static int __sd_thread_create(const char *name, sd_thread_t *thread,

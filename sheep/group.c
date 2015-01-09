@@ -11,6 +11,10 @@
 
 #include "sheep_priv.h"
 
+#ifdef USE_URCU
+#include <urcu.h>
+#endif
+
 struct node {
 	struct sd_node ent;
 	struct list_node list;
@@ -70,7 +74,11 @@ static int get_zones_nr_from(struct rb_root *nroot)
  */
 struct vnode_info *grab_vnode_info(struct vnode_info *vnode_info)
 {
+#ifdef USE_URCU
+	rcu_read_lock();
+#else
 	refcount_inc(&vnode_info->refcnt);
+#endif
 	return vnode_info;
 }
 
@@ -92,6 +100,9 @@ main_fn struct vnode_info *get_vnode_info(void)
 /* Release a reference to the current vnode information. */
 void put_vnode_info(struct vnode_info *vnode_info)
 {
+#ifdef USE_URCU
+	rcu_read_unlock();
+#else
 	if (vnode_info) {
 		if (refcount_dec(&vnode_info->refcnt) == 0) {
 			rb_destroy(&vnode_info->vroot, struct sd_vnode, rb);
@@ -99,6 +110,7 @@ void put_vnode_info(struct vnode_info *vnode_info)
 			free(vnode_info);
 		}
 	}
+#endif
 }
 
 static void recalculate_vnodes(struct rb_root *nroot)
@@ -152,7 +164,9 @@ struct vnode_info *alloc_vnode_info(const struct rb_root *nroot)
 	else
 		nodes_to_vnodes(&vnode_info->nroot, &vnode_info->vroot);
 	vnode_info->nr_zones = get_zones_nr_from(&vnode_info->nroot);
+#ifndef USE_URCU
 	refcount_set(&vnode_info->refcnt, 1);
+#endif
 	return vnode_info;
 }
 
@@ -894,12 +908,12 @@ static void update_cluster_info(const struct cluster_info *cinfo,
 				sd_debug("Currently, there are no other"
 					 " members. I don't have to collect"
 					 "CINFO from others");
-				put_vnode_info(members);
 			} else {
 				collect_work = xzalloc(sizeof(*collect_work));
 				collect_work->epoch = cinfo->epoch - 1;
 				collect_work->members = members;
 			}
+			put_vnode_info(members);
 		}
 	} else {
 		if (0 < cinfo->epoch && cinfo->status == SD_STATUS_OK)
@@ -944,6 +958,15 @@ static void update_cluster_info(const struct cluster_info *cinfo,
 	}
 
 	put_vnode_info(old_vnode_info);
+#ifdef USE_URCU
+	if (old_vnode_info) {
+		synchronize_rcu();
+
+		rb_destroy(&old_vnode_info->vroot, struct sd_vnode, rb);
+		rb_destroy(&old_vnode_info->nroot, struct sd_node, rb);
+		free(old_vnode_info);
+	}
+#endif
 }
 
 /*
@@ -1222,6 +1245,7 @@ main_fn void sd_leave_handler(const struct sd_node *left,
 	 */
 	old_vnode_info = main_thread_get(current_vnode_info);
 	main_thread_set(current_vnode_info, alloc_vnode_info(nroot));
+
 	if (sys->cinfo.status == SD_STATUS_OK) {
 		if (is_gateway_only_cluster(nroot)) {
 			sd_info("only gateway nodes are remaining, exiting");
@@ -1236,6 +1260,15 @@ main_fn void sd_leave_handler(const struct sd_node *left,
 	}
 
 	put_vnode_info(old_vnode_info);
+#ifdef USE_URCU
+	if (old_vnode_info) {
+		synchronize_rcu();
+
+		rb_destroy(&old_vnode_info->vroot, struct sd_vnode, rb);
+		rb_destroy(&old_vnode_info->nroot, struct sd_node, rb);
+		free(old_vnode_info);
+	}
+#endif
 
 	sockfd_cache_del_node(&left->nid);
 
@@ -1274,6 +1307,15 @@ static void kick_node_recover(void)
 		panic("cannot log current epoch %d", sys->cinfo.epoch);
 	start_recovery(main_thread_get(current_vnode_info), old, true, NULL);
 	put_vnode_info(old);
+#ifdef USE_URCU
+	if (old) {
+		synchronize_rcu();
+
+		rb_destroy(&old->vroot, struct sd_vnode, rb);
+		rb_destroy(&old->nroot, struct sd_node, rb);
+		free(old);
+	}
+#endif
 }
 
 main_fn void sd_update_node_handler(struct sd_node *node)

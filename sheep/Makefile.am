@@ -53,7 +53,7 @@ AM_CPPFLAGS		+= -DENABLE_TRACE
 sheep_SOURCES		+= trace/trace.c trace/mcount.S trace/graph.c trace/checker.c
 endif
 
-sheep_LDADD	  	= ../lib/libsheepdog.a -lpthread -lm\
+sheep_LDADD	  	= ../lib/libsheepdog.a -lpthread -lm -lurcu\
 			  $(libcpg_LIBS) $(libcfg_LIBS) $(libacrd_LIBS) $(LIBS)
 
 if BUILD_NFS

@@ -36,7 +36,7 @@ if BUILD_NFS
 dog_SOURCES		+= nfs.c
 endif
 
-dog_LDADD		= ../lib/libsheepdog.a -lpthread
+dog_LDADD		= ../lib/libsheepdog.a -lpthread -lurcu
 dog_DEPENDENCIES	= ../lib/libsheepdog.a
 
 noinst_HEADERS		= treeview.h dog.h farm/farm.h

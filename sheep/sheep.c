@@ -16,6 +16,10 @@
 #include "trace/trace.h"
 #include "option.h"
 
+#ifdef USE_URCU
+#include <urcu.h>
+#endif
+
 #define EPOLL_SIZE 4096
 #define DEFAULT_OBJECT_DIR "/tmp"
 #define LOG_FILE_NAME "sheep.log"
@@ -658,6 +662,10 @@ int main(int argc, char **argv)
 	static struct logger_user_info sheep_info;
 	struct stat logdir_st;
 	enum log_dst_type log_dst_type;
+
+#ifdef USE_URCU
+	rcu_init();
+#endif
 
 	sys->node_status = SD_NODE_STATUS_INITIALIZATION;
 

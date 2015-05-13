@@ -685,6 +685,8 @@ static void get_vdis(const struct rb_root *nroot, const struct sd_node *joined)
 	queue_work(sys->block_wqueue, &w->work);
 }
 
+#define VDI_STATES_UNIT 128
+
 struct cinfo_collection_work {
 	struct work work;
 
@@ -693,13 +695,38 @@ struct cinfo_collection_work {
 
 	int nr_vdi_states;
 	struct vdi_state *result;
+
+	/*
+	 * If nr_remaining member is -1, a number of vdi state snapshots
+	 * is still not obtained.
+	 */
+	int nr_remaining;
 };
 
 static struct cinfo_collection_work *collect_work;
 
+static int cinfo_collect_snapshot_size(uint32_t epoch, struct sd_node *n)
+{
+	struct sd_req hdr;
+	int ret;
+	int32_t snapshot_size = 0;
+
+	sd_init_req(&hdr, SD_OP_VDI_STATE_SNAPSHOT_CTL);
+	hdr.vdi_state_snapshot.subop = SNAPSHOT_CTL_SUBOP_GET_NR;
+	hdr.vdi_state_snapshot.tgt_epoch = epoch;
+	hdr.data_length = sizeof(snapshot_size);
+
+	ret = sheep_exec_req(&n->nid, &hdr, (char *)&snapshot_size);
+	if (ret != SD_RES_SUCCESS)
+		return -1;
+
+	return snapshot_size;
+}
+
 static struct vdi_state *do_cinfo_collection_work(uint32_t epoch,
 						  struct sd_node *n,
-						  int *nr_vdi_states)
+						  int *nr_vdi_states,
+						  int start, int end)
 {
 	struct vdi_state *vs = NULL;
 	unsigned int rlen = 4096;
@@ -711,8 +738,10 @@ static struct vdi_state *do_cinfo_collection_work(uint32_t epoch,
 
 retry:
 	sd_init_req(&hdr, SD_OP_VDI_STATE_SNAPSHOT_CTL);
-	hdr.vdi_state_snapshot.get = 1;
+	hdr.vdi_state_snapshot.subop = SNAPSHOT_CTL_SUBOP_GET;
 	hdr.vdi_state_snapshot.tgt_epoch = epoch;
+	hdr.vdi_state_snapshot.start = start;
+	hdr.vdi_state_snapshot.end = end;
 	hdr.data_length = rlen;
 
 	ret = sheep_exec_req(&n->nid, &hdr, (char *)vs);
@@ -747,15 +776,25 @@ static void cinfo_collection_work(struct work *work)
 
 	sd_assert(w == collect_work);
 
+	if (w->nr_remaining == -1) {
+		ret = cinfo_collect_snapshot_size(w->epoch, n);
+		if (ret < 0)
+			goto fail;
+
+		w->nr_remaining = ret;
+	}
+
 	rb_for_each_entry(n, &w->members->nroot, rb) {
 		if (node_is_local(n))
 			continue;
 
-		vs = do_cinfo_collection_work(w->epoch, n, &nr_vdi_states);
+		vs = do_cinfo_collection_work(w->epoch, n, &nr_vdi_states,
+					      0, w->nr_remaining);
 		if (vs)
 			goto get_succeed;
 	}
 
+fail:
 	panic("getting a snapshot of vdi state at epoch %d failed", w->epoch);
 
 get_succeed:
@@ -769,7 +808,7 @@ get_succeed:
 			continue;
 
 		sd_init_req(&hdr, SD_OP_VDI_STATE_SNAPSHOT_CTL);
-		hdr.vdi_state_snapshot.get = 0;
+		hdr.vdi_state_snapshot.subop = SNAPSHOT_CTL_SUBOP_FREE;
 		hdr.vdi_state_snapshot.tgt_epoch = w->epoch;
 
 		ret = sheep_exec_req(&n->nid, &hdr, (char *)vs);
@@ -821,6 +860,8 @@ static void collect_cinfo(void)
 
 	sd_debug("start cluster info collection for epoch %d",
 		 collect_work->epoch);
+
+	collect_work->nr_remaining = -1;
 
 	collect_work->work.fn = cinfo_collection_work;
 	collect_work->work.done = cinfo_collection_done;

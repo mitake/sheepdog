@@ -134,6 +134,11 @@
 #define LOCK_TYPE_NORMAL 0
 #define LOCK_TYPE_SHARED 1	/* for iSCSI multipath */
 
+
+#define SNAPSHOT_CTL_SUBOP_FREE 0
+#define SNAPSHOT_CTL_SUBOP_GET 1
+#define SNAPSHOT_CTL_SUBOP_GET_NR 2
+
 struct sd_req {
 	uint8_t		proto_ver;
 	uint8_t		opcode;
@@ -196,8 +201,10 @@ struct sd_req {
 			uint16_t	port;
 		} forw;
 		struct {
-			uint32_t        get; /* 0 means free, 1 means get */
+			uint32_t        subop; /* 0 means free, 1 means get */
 			uint32_t        tgt_epoch;
+			uint32_t        start;
+			uint32_t        end;
 		} vdi_state_snapshot;
 		struct {
 			/* 1 means validate, 0 means invalidate */

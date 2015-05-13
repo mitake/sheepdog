@@ -1457,26 +1457,50 @@ static int local_vdi_state_snapshot_ctl(const struct sd_req *req,
 					struct sd_rsp *rsp, void *data,
 					const struct sd_node *sender)
 {
-	bool get = !!req->vdi_state_snapshot.get;
+	int subop = req->vdi_state_snapshot.subop;
 	int epoch = req->vdi_state_snapshot.tgt_epoch;
 	int ret, length = 0;
 
-	sd_info("%s vdi state snapshot at epoch %d",
-		get ? "getting" : "freeing", epoch);
+	switch (subop) {
+	case SNAPSHOT_CTL_SUBOP_FREE:
+		sd_info("freeing vdi state snapshot at epoch %d", epoch);
+		free_vdi_state_snapshot(epoch);
+		break;
+	case SNAPSHOT_CTL_SUBOP_GET:
+		sd_info("getting vdi state snapshot at epoch %d", epoch);
 
-	if (get) {
 		ret = get_vdi_state_snapshot(epoch, data, req->data_length,
-					     &length);
+					     &length,
+					     req->vdi_state_snapshot.start,
+					     req->vdi_state_snapshot.end);
 		if (ret == SD_RES_SUCCESS)
 			rsp->data_length = length;
 		else {
 			sd_info("failed to get vdi state snapshot: %s",
 			       sd_strerror(ret));
-
 			return ret;
 		}
-	} else
-		free_vdi_state_snapshot(epoch);
+
+		break;
+	case SNAPSHOT_CTL_SUBOP_GET_NR:
+		sd_info("getting a number of vdi state snapshot at epoch %d",
+			epoch);
+
+		ret = get_nr_vdi_state_snapshot(epoch, (int *)data);
+		if (ret == SD_RES_SUCCESS)
+			rsp->data_length = sizeof(uint32_t);
+		else {
+			sd_info("failed to get a number of vdi state in snapshot:"
+				" %s", sd_strerror(ret));
+			return ret;
+		}
+
+		break;
+	default:
+		sd_err("invalid subopcode (%d) from %s", subop,
+		       node_to_str(sender));
+		return SD_RES_INVALID_PARMS;
+	}
 
 	return SD_RES_SUCCESS;
 }

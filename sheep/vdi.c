@@ -2056,7 +2056,8 @@ main_fn void take_vdi_state_snapshot(int epoch)
 }
 
 main_fn int get_vdi_state_snapshot(int epoch, void *data, int data_len_max,
-				   int *data_len_result)
+				   int *data_len_result, uint32_t start,
+				   uint32_t end)
 {
 	struct vdi_state_snapshot *snapshot;
 	int len;
@@ -2071,15 +2072,31 @@ main_fn int get_vdi_state_snapshot(int epoch, void *data, int data_len_max,
 	return SD_RES_AGAIN;
 
 found:
-	len = sizeof(*snapshot->vs) * snapshot->nr_vs;
+	len = sizeof(*snapshot->vs) * (end - start + 1);
 	if (data_len_max < len) {
 		sd_info("maximum allowed length: %d, required length: %d",
 			data_len_max, len);
 		return SD_RES_BUFFER_SMALL;
 	}
 
-	memcpy(data, snapshot->vs, len);
+	memcpy(data, &snapshot->vs[start], len);
 	return SD_RES_SUCCESS;
+}
+
+main_fn int get_nr_vdi_state_snapshot(int epoch, int *size)
+{
+	struct vdi_state_snapshot *snapshot;
+
+	list_for_each_entry(snapshot, &vdi_state_snapshot_list, list) {
+		if (snapshot->epoch == epoch) {
+			*size = snapshot->nr_vs;
+			return SD_RES_SUCCESS;
+		}
+	}
+
+	sd_info("get request for not prepared vdi state snapshot, epoch: %d",
+		epoch);
+	return SD_RES_AGAIN;
 }
 
 main_fn void free_vdi_state_snapshot(int epoch)

@@ -78,4 +78,8 @@ int sd_thread_create_with_idx(const char *, sd_thread_t *,
 		     void *(*start_routine)(void *), void *);
 int sd_thread_join(sd_thread_t , void **);
 
+#ifndef NR_WORKQUEUE_MAX
+#define NR_WORKQUEUE_MAX 1024
+#endif
+
 #endif

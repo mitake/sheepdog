@@ -215,7 +215,7 @@ static inline uint64_t wq_get_roof(struct wq_info *wi)
 	default:
 		panic("Invalid threads control %d", wi->tc);
 	}
-	return nr;
+	return min(nr, (uint64_t)NR_WORKQUEUE_MAX);
 }
 
 static bool wq_need_grow(struct wq_info *wi)

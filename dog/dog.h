@@ -29,6 +29,10 @@
 #include "common.h"
 #include "logger.h"
 
+#ifdef HAVE_ACCELIO
+#include "xio.h"
+#endif
+
 #define CMD_NEED_NODELIST (1 << 0)
 #define CMD_NEED_ARG (1 << 1)
 #define CMD_NEED_ROOT (1 << 2)

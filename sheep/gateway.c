@@ -302,6 +302,8 @@ out:
 	return ret;
 }
 
+#ifndef HAVE_ACCELIO
+
 struct forward_info_entry {
 	struct pollfd pfd;
 	const struct node_id *nid;
@@ -549,6 +551,15 @@ out:
 	finish_requests(req, reqs, nr_reqs);
 	return err_ret;
 }
+
+#else	/* HAVE_ACCELIO */
+
+static int gateway_forward_request(struct request *req)
+{
+	panic("not implemented yet!");
+}
+
+#endif	/* HAVE_ACCELIO */
 
 static int prepare_obj_refcnt(const struct sd_req *hdr, uint32_t *vids,
 			      struct generation_reference *refs)

@@ -11,8 +11,9 @@
 
 #include "dog.h"
 #include "sha1.h"
-#include "sockfd_cache.h"
 #include "fec.h"
+
+#include "sockfd_cache.h"
 
 struct timespec get_time_tick(void)
 {
@@ -231,6 +232,7 @@ out:
 
 int dog_exec_req(const struct node_id *nid, struct sd_req *hdr, void *buf)
 {
+#ifndef HAVE_ACCELIO
 	struct sockfd *sfd;
 	int ret;
 
@@ -248,6 +250,14 @@ int dog_exec_req(const struct node_id *nid, struct sd_req *hdr, void *buf)
 	sockfd_cache_put(nid, sfd);
 
 	return ret ? -1 : 0;
+#else	/* HAVE_ACCELIO */
+
+	int ret;
+
+	ret = xio_exec_req(nid, hdr, buf, NULL, 0, UINT32_MAX);
+	return ret ? -1 : 0;
+
+#endif	/* HAVE_ACCELIO */
 }
 
 /* Light request only contains header, without body content. */

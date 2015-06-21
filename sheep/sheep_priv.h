@@ -64,7 +64,16 @@
 #define worker_fn
 #endif
 
+enum client_info_type {
+	CLIENT_INFO_TYPE_DEFAULT = 1,
+#ifdef HAVE_ACCELIO
+	CLIENT_INFO_TYPE_XIO,
+#endif
+};
+
 struct client_info {
+	enum client_info_type type;
+
 	struct connection conn;
 
 	struct request *rx_req;
@@ -76,6 +85,10 @@ struct client_info {
 	struct list_head done_reqs;
 
 	refcnt_t refcnt;
+
+#ifdef HAVE_ACCELIO
+	struct xio_msg *xio_req;
+#endif
 };
 
 enum REQUST_STATUS {
@@ -650,5 +663,13 @@ static inline int nfs_init(const char *options)
 #endif
 
 extern bool wildcard_recovery;
+
+struct request *alloc_request(struct client_info *ci, uint32_t data_length);
+void queue_request(struct request *req);
+void free_request(struct request *req);
+
+#ifdef HAVE_ACCELIO
+void xio_send_reply(struct client_info *ci);
+#endif
 
 #endif

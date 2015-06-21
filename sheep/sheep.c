@@ -16,6 +16,10 @@
 #include "trace/trace.h"
 #include "option.h"
 
+#ifdef HAVE_ACCELIO
+#include "xio.h"
+#endif
+
 #define EPOLL_SIZE 4096
 #define DEFAULT_OBJECT_DIR "/tmp"
 #define LOG_FILE_NAME "sheep.log"
@@ -924,6 +928,11 @@ int main(int argc, char **argv)
 		goto cleanup_dir;
 	}
 
+#ifdef HAVE_ACCELIO
+	sd_xio_init();
+	xio_init_main_ctx();
+#endif
+
 	ret = log_init(program_name, log_dst_type, log_level, log_path);
 	if (ret) {
 		free(argp);
@@ -947,8 +956,10 @@ int main(int argc, char **argv)
 	if (ret)
 		goto cleanup_log;
 
+#ifndef HAVE_ACCELIO
 	if (io_addr && create_listen_port(io_addr, io_port))
 		goto cleanup_log;
+#endif
 
 	ret = init_unix_domain_socket(dir);
 	if (ret)

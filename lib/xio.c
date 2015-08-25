@@ -187,6 +187,7 @@ void xio_init_main_ctx(void)
 void sd_xio_init(void)
 {
 	int xopt = 2;		/* hdr + body */
+	int reconn = 1;
 
 	xio_init();
 
@@ -196,6 +197,9 @@ void sd_xio_init(void)
 	xio_set_opt(NULL,
 		    XIO_OPTLEVEL_ACCELIO, XIO_OPTNAME_MAX_OUT_IOVLEN,
 		    &xopt, sizeof(int));
+	xio_set_opt(NULL,
+		    XIO_OPTLEVEL_ACCELIO, XIO_OPTNAME_ENABLE_RECONNECT,
+		    &reconn, sizeof(int));
 }
 
 void sd_xio_shutdown(void)

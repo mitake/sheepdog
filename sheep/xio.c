@@ -187,6 +187,7 @@ main_fn void xio_send_reply(struct client_info *ci)
 
 	xio_context_run_loop(xio_get_main_ctx(), XIO_INFINITE);
 
+	req->data = NULL;	/* the data is owned by xio */
 	free_request(req);
 }
 

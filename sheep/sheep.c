@@ -406,9 +406,21 @@ static int ionic_port_parser(const char *s)
 	return 0;
 }
 
+#ifdef HAVE_ACCELIO
+static const char *io_transport;
+static int ionic_transport_parser(const char *s)
+{
+	io_transport = s;
+	return 0;
+}
+#endif
+
 static struct option_parser ionic_parsers[] = {
 	{ "host=", ionic_host_parser },
 	{ "port=", ionic_port_parser },
+#ifdef HAVE_ACCELIO
+	{ "transport=", ionic_transport_parser },
+#endif
 	{ NULL, NULL },
 };
 
@@ -792,6 +804,16 @@ int main(int argc, char **argv)
 					exit(1);
 				}
 			sys->this_node.nid.io_port = io_port;
+#ifdef HAVE_ACCELIO
+			if (!strcmp(io_transport, "tcp"))
+				sys->this_node.nid.io_transport_type = IO_TRANSPORT_TYPE_TCP;
+			else if (!strcmp(io_transport, "rdma"))
+				sys->this_node.nid.io_transport_type = IO_TRANSPORT_TYPE_RDMA;
+			else {
+				sd_err("unknown transport type: %s", io_transport);
+				exit(1);
+			}
+#endif
 			break;
 		case 'j':
 			uatomic_set_true(&sys->use_journal);
@@ -959,6 +981,20 @@ int main(int argc, char **argv)
 #ifndef HAVE_ACCELIO
 	if (io_addr && create_listen_port(io_addr, io_port))
 		goto cleanup_log;
+#else
+	if (io_addr) {
+		bool rdma;
+
+		if (!strcmp(io_transport, "rdma"))
+			rdma = true;
+		else {
+			sd_assert(!strcmp(io_transport, "tcp"));
+			rdma = false;
+		}
+
+		if (xio_create_listen_port(io_addr, io_port, rdma))
+			goto cleanup_log;
+	}
 #endif
 
 	ret = init_unix_domain_socket(dir);

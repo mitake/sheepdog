@@ -28,7 +28,7 @@ int xio_send_req(struct node_id *nid, struct sd_req *hdr, void *data,
 int xio_do_read(struct node_id *nid, void *buf, uint32_t len,
 	    bool (*need_retry)(uint32_t), uint32_t, uint32_t);
 int xio_create_listen_ports(const char *bindaddr, int port,
-			    int (*callback)(int fd, void *), void *data);
+			    int (*callback)(int fd, void *), bool rdma);
 
 void xio_init_main_ctx(void);
 

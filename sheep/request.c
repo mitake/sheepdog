@@ -1136,17 +1136,19 @@ void unregister_listening_fds(void)
 
 int create_listen_port(const char *bindaddr, int port)
 {
-#ifndef HAVE_ACCELIO
 	static bool is_inet_socket = true;
 
 	return create_listen_ports(bindaddr, port, create_listen_port_fn,
 				   &is_inet_socket);
-#else
-	static bool is_inet_socket = false;
-	return xio_create_listen_ports(bindaddr, port, NULL,
-				       &is_inet_socket);
-#endif
 }
+
+#ifdef HAVE_ACCELIO
+int xio_create_listen_port(const char *bindaddr, int port, bool rdma)
+{
+	return xio_create_listen_ports(bindaddr, port, create_listen_port_fn,
+				       rdma);
+}
+#endif
 
 int init_unix_domain_socket(const char *dir)
 {

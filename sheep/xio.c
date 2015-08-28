@@ -217,7 +217,7 @@ static void xio_server_handler(int fd, int events, void *data)
 }
 
 int xio_create_listen_ports(const char *bindaddr, int port,
-			    int (*callback)(int fd, void *), void *data)
+			    int (*callback)(int fd, void *), bool rdma)
 {
 	char url[256];
 	struct xio_server *server;
@@ -227,7 +227,7 @@ int xio_create_listen_ports(const char *bindaddr, int port,
 	server_data = xzalloc(sizeof(*server_data));
 	server_data->ctx = xio_get_main_ctx();
 
-	sprintf(url, "tcp://%s:%d", bindaddr ? bindaddr : "0.0.0.0", port);
+	sprintf(url, rdma ? "rdma://%s:%d" : "tcp://%s:%d", bindaddr ? bindaddr : "0.0.0.0", port);
 	sd_info("accelio binding url: %s", url);
 
 	/* bind a listener server to a portal/url */

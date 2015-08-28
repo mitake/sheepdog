@@ -232,9 +232,15 @@ out:
 
 int dog_exec_req(const struct node_id *nid, struct sd_req *hdr, void *buf)
 {
-#ifndef HAVE_ACCELIO
 	struct sockfd *sfd;
 	int ret;
+
+#ifndef HAVE_ACCELIO
+	if (nid->io_transport_type == IO_TRANSPORT_TYPE_RDMA) {
+		ret = xio_exec_req(nid, hdr, buf, NULL, 0, UINT32_MAX);
+		goto end;
+	}
+#endif
 
 	sfd = sockfd_cache_get(nid);
 	if (!sfd)
@@ -249,15 +255,8 @@ int dog_exec_req(const struct node_id *nid, struct sd_req *hdr, void *buf)
 
 	sockfd_cache_put(nid, sfd);
 
+end:
 	return ret ? -1 : 0;
-#else	/* HAVE_ACCELIO */
-
-	int ret;
-
-	ret = xio_exec_req(nid, hdr, buf, NULL, 0, UINT32_MAX);
-	return ret ? -1 : 0;
-
-#endif	/* HAVE_ACCELIO */
 }
 
 /* Light request only contains header, without body content. */

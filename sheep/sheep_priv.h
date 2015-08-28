@@ -349,6 +349,9 @@ static inline bool is_aligned_to_pagesize(void *p)
 }
 
 int create_listen_port(const char *bindaddr, int port);
+#ifdef HAVE_ACCELIO
+int xio_create_listen_port(const char *bindaddr, int port, bool rdma);
+#endif
 int init_unix_domain_socket(const char *dir);
 void unregister_listening_fds(void);
 

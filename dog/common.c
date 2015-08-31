@@ -235,11 +235,12 @@ int dog_exec_req(const struct node_id *nid, struct sd_req *hdr, void *buf)
 	struct sockfd *sfd;
 	int ret;
 
-#ifndef HAVE_ACCELIO
-	if (nid->io_transport_type == IO_TRANSPORT_TYPE_RDMA) {
+#ifdef HAVE_ACCELIO
+	/* if (nid->io_transport_type == IO_TRANSPORT_TYPE_RDMA) { */
 		ret = xio_exec_req(nid, hdr, buf, NULL, 0, UINT32_MAX);
-		goto end;
-	}
+	/* 	goto end; */
+	/* } */
+		return ret ? -1 : 0;
 #endif
 
 	sfd = sockfd_cache_get(nid);

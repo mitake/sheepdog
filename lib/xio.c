@@ -79,6 +79,9 @@ static int on_session_event(struct xio_session *session,
 			    struct xio_session_event_data *event_data,
 			    void *cb_user_context)
 {
+	struct client_data *client_data =
+			(struct client_data *)cb_user_context;
+
 	/* struct session_data *session_data = (struct session_data *) */
 	/* 					cb_user_context; */
 
@@ -98,6 +101,8 @@ static int on_session_event(struct xio_session *session,
 		printf("other event: %d\n", event_data->event);
 		break;
 	};
+
+	xio_context_stop_loop(client_data->ctx);
 
 	return 0;
 }
@@ -182,12 +187,12 @@ static void msg_prep_for_send(struct sd_req *hdr, struct sd_rsp *rsp,
 	isglist[0].iov_len = sizeof(*rsp);
 	isglist[0].mr = NULL;
 
-	/* if (hdr->flags & SD_FLAG_CMD_PIGGYBACK) { */
+	if (hdr->data_length) {
 		vmsg_sglist_set_nents(pimsg, 2);
 		isglist[1].iov_base = xzalloc(hdr->data_length);
 		isglist[1].iov_len = hdr->data_length;
 		isglist[1].mr = NULL;
-	/* } */
+	}
 }
 
 static void msg_finalize(struct sd_req *hdr, void *data, struct xio_msg *xrsp)
@@ -196,9 +201,10 @@ static void msg_finalize(struct sd_req *hdr, void *data, struct xio_msg *xrsp)
 	struct xio_iovec_ex *isglist = vmsg_sglist(pimsg);
 	struct sd_rsp *rsp;
 
+	printf("header memcpy\n");
 	memcpy(hdr, xrsp->in.header.iov_base, sizeof(*hdr));
 	rsp = (struct sd_rsp *)hdr;
-	if (isglist[0].iov_len)
+	if (isglist[0].iov_len && data)
 		memcpy(data, isglist[0].iov_base, isglist[0].iov_len);
 
 	xio_release_response(xrsp);

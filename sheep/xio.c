@@ -65,6 +65,7 @@ static int server_on_request(struct xio_session *session,
 
 	queue_request(req);
 
+	xio_context_stop_loop(xio_get_main_ctx());
 	return 0;
 }
 
@@ -96,6 +97,8 @@ static int server_on_new_session(struct xio_session *session,
 
 	/* priv->efd = eventfd(0, EFD_SEMAPHORE); */
 	xio_accept(session, NULL, 0, NULL, 0);
+
+	xio_context_stop_loop(xio_get_main_ctx());
 }
 
 static int server_on_session_event(struct xio_session *session,
@@ -134,6 +137,7 @@ static int server_on_session_event(struct xio_session *session,
 		break;
 	};
 
+	xio_context_stop_loop(xio_get_main_ctx());
 	return 0;
 }
 

@@ -107,11 +107,29 @@ static int on_session_event(struct xio_session *session,
 	return 0;
 }
 
+static int client_assign_data_in_buf(struct xio_msg *msg, void *cb_user_context)
+{
+	struct xio_iovec_ex	*sglist = vmsg_sglist(&msg->in);
+	struct xio_reg_mem	in_xbuf;
+
+	sd_debug("assign buffer, msg vec len: %d", sglist[0].iov_len);
+	if (!sglist[0].iov_len)
+		return 0;
+
+	xio_mem_alloc(sglist[0].iov_len, &in_xbuf);
+
+	sglist[0].iov_base= in_xbuf.addr;
+	sglist[0].mr= in_xbuf.mr;
+
+	return 0;
+}
+
 static struct xio_session_ops client_ses_ops = {
 	/* .on_session_event = on_session_event, */
 	.on_session_established = NULL,
 	.on_msg = client_on_response,
-	/* .on_msg_error = on_msg_error, */
+	.on_msg_error = on_msg_error,
+	.assign_data_in_buf		= client_assign_data_in_buf,
 };
 
 static struct xio_connection *sd_xio_create_connection(struct xio_context *ctx,
@@ -200,11 +218,13 @@ static void msg_finalize(struct sd_req *hdr, void *data, struct xio_msg *xrsp)
 	struct xio_vmsg *pimsg = &xrsp->in;
 	struct xio_iovec_ex *isglist = vmsg_sglist(pimsg);
 	struct sd_rsp *rsp;
+	int body_idx = vmsg_sglist_nents(pimsg) - 1;
 
+	sd_assert(xrsp->in.header.iov_len == sizeof(struct sd_rsp));
 	memcpy(hdr, xrsp->in.header.iov_base, sizeof(*hdr));
 	rsp = (struct sd_rsp *)hdr;
-	if (isglist[0].iov_len && data)
-		memcpy(data, isglist[0].iov_base, isglist[0].iov_len);
+	if (0 <= body_idx && isglist[body_idx].iov_len && data)
+		memcpy(data, isglist[body_idx].iov_base, isglist[body_idx].iov_len);
 
 	xio_release_response(xrsp);
 }
@@ -213,7 +233,6 @@ int xio_exec_req(const struct node_id *nid, struct sd_req *hdr, void *data,
 		 bool (*need_retry)(uint32_t epoch), uint32_t epoch,
 		 uint32_t max_count)
 {
-	/* struct xio_context *ctx =xio_context_create(NULL, 0, -1); */
 	struct xio_context *ctx = is_main_thread() ?
 		main_ctx : xio_context_create(NULL, 0, -1);
 
@@ -252,10 +271,12 @@ static int gw_client_on_response(struct xio_session *session,
 	struct xio_vmsg *pimsg = &rsp->in;
 	struct xio_iovec_ex *isglist = vmsg_sglist(pimsg);
 
+	int body_idx = vmsg_sglist_nents(pimsg) - 1;
+
 	sd_debug("response on fi_entry %p\n", fi_entry);
 
-	if (!fi_entry->wlen && isglist[0].iov_len)
-		memcpy(fi_entry->buf, isglist[0].iov_base, isglist[0].iov_len);
+	if (0 <= body_idx && !fi_entry->wlen && isglist[body_idx].iov_len)
+		memcpy(fi_entry->buf, isglist[body_idx].iov_base, isglist[body_idx].iov_len);
 
 	fi->nr_done++;
 	if (fi->nr_done == fi->nr_send)
@@ -268,7 +289,8 @@ static struct xio_session_ops gw_client_ses_ops = {
 	/* .on_session_event = on_session_event, */
 	.on_session_established = NULL,
 	.on_msg = gw_client_on_response,
-	/* .on_msg_error = on_msg_error, */
+	.on_msg_error = on_msg_error,
+	.assign_data_in_buf		= client_assign_data_in_buf,
 };
 
 struct xio_connection *sd_xio_gw_create_connection(struct xio_context *ctx,

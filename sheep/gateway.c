@@ -562,12 +562,15 @@ static int gateway_forward_request(struct request *req)
 #else  /* HAVE_ACCELIO */
 
 	ctx = xio_context_create(NULL, 0, -1);
+
 	memset(&xio_fi, 0, sizeof(xio_fi));
+	xio_fi.nr_send = nr_to_send;
 
 	for (i = 0; i < nr_to_send; i++) {
 		const struct node_id *nid = &target_nodes[i]->nid;
 		struct xio_forward_info_entry *fi_entry = &xio_fi.ent[i];
 		struct xio_connection *conn;
+		struct sd_req *copied_hdr;
 
 		fi_entry->nid = nid;
 		fi_entry->buf = reqs[i].buf;
@@ -581,11 +584,15 @@ static int gateway_forward_request(struct request *req)
 		hdr.obj.ec_index = i;
 		hdr.obj.copy_policy = req->rq.obj.copy_policy;
 
-		xio_gw_send_req(conn, &hdr, reqs[i].buf, sheep_need_retry,
+		copied_hdr = xzalloc(sizeof(*copied_hdr));
+		memcpy(copied_hdr, &hdr, sizeof(hdr));
+
+		xio_gw_send_req(conn, copied_hdr, reqs[i].buf, sheep_need_retry,
 				req->rq.epoch, MAX_RETRY_COUNT);
 	}
 
 	xio_context_run_loop(ctx, XIO_INFINITE);
+	xio_context_destroy(ctx);
 
 #endif	/* HAVE_ACCELIO */
 

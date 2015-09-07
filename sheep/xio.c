@@ -203,6 +203,21 @@ static int server_on_send_response_complete(struct xio_session *session,
 	return 0;
 }
 
+static int server_assign_data_in_buf(struct xio_msg *msg, void *cb_user_context)
+{
+	struct xio_iovec_ex	*sglist = vmsg_sglist(&msg->in);
+	struct xio_reg_mem	in_xbuf;
+
+	sd_debug("assign buffer, msg vec len: %d", sglist[0].iov_len);
+
+	xio_mem_alloc(sglist[0].iov_len, &in_xbuf);
+
+	sglist[0].iov_base= in_xbuf.addr;
+	sglist[0].mr= in_xbuf.mr;
+
+	return 0;
+}
+
 /*---------------------------------------------------------------------------*/
 /* asynchronous callbacks						     */
 /*---------------------------------------------------------------------------*/
@@ -212,6 +227,7 @@ static struct xio_session_ops  portal_server_ops = {
 	.on_msg_send_complete		=  server_on_send_response_complete,
 	.on_msg				=  server_on_request,
 	.on_msg_error			=  NULL,
+	.assign_data_in_buf		= server_assign_data_in_buf,
 };
 
 static void xio_server_handler(int fd, int events, void *data)

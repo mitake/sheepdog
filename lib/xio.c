@@ -308,15 +308,13 @@ void xio_gw_send_req(struct xio_connection *conn, struct sd_req *hdr, void *data
 		     bool (*need_retry)(uint32_t epoch), uint32_t epoch,
 		     uint32_t max_count)
 {
-	struct xio_msg xreq;
-	struct sd_rsp rsp;
+	struct xio_msg *xreq = xzalloc(sizeof(*xreq));
+	struct sd_rsp *rsp = xzalloc(sizeof(*rsp));
 
-	memset(&rsp, 0, sizeof(rsp));
-	memset(&xreq, 0, sizeof(xreq));
-	client_msg_vec_init(&xreq);
-	msg_prep_for_send(hdr, &rsp, data, &xreq);
+	client_msg_vec_init(xreq);
+	msg_prep_for_send(hdr, rsp, data, xreq);
 
-	xio_send_request(conn, &xreq);
+	xio_send_request(conn, xreq);
 }
 
 void xio_init_main_ctx(void)

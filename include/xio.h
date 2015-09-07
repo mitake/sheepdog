@@ -34,4 +34,28 @@ void xio_init_main_ctx(void);
 
 struct xio_context *xio_get_main_ctx(void);
 
+struct xio_connection *sd_xio_gw_create_connection(struct xio_context *ctx,
+						   const struct node_id *nid,
+						   void *user_ctx);
+void xio_gw_send_req(struct xio_connection *conn, struct sd_req *hdr, void *data,
+		     bool (*need_retry)(uint32_t epoch), uint32_t epoch,
+		     uint32_t max_count);
+
+struct xio_forward_info;
+
+struct xio_forward_info_entry {
+	const struct node_id *nid;
+	void *buf;
+	int wlen;
+
+	struct xio_forward_info *fi;
+};
+
+struct xio_forward_info {
+	struct xio_forward_info_entry ent[SD_MAX_NODES];
+	int nr_send, nr_done;
+
+	struct xio_context *ctx;
+};
+
 #endif	/* __XIO_H__ */

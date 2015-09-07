@@ -201,7 +201,6 @@ static void msg_finalize(struct sd_req *hdr, void *data, struct xio_msg *xrsp)
 	struct xio_iovec_ex *isglist = vmsg_sglist(pimsg);
 	struct sd_rsp *rsp;
 
-	printf("header memcpy\n");
 	memcpy(hdr, xrsp->in.header.iov_base, sizeof(*hdr));
 	rsp = (struct sd_rsp *)hdr;
 	if (isglist[0].iov_len && data)
@@ -239,6 +238,85 @@ int xio_exec_req(const struct node_id *nid, struct sd_req *hdr, void *data,
 		xio_context_destroy(ctx);
 
 	return 0;
+}
+
+static int gw_client_on_response(struct xio_session *session,
+				 struct xio_msg *rsp,
+				 int last_in_rxq,
+				 void *cb_user_context)
+{
+	struct xio_forward_info_entry *fi_entry =
+		(struct xio_forward_info_entry *)cb_user_context;
+	struct xio_forward_info *fi = fi_entry->fi;
+
+	struct xio_vmsg *pimsg = &rsp->in;
+	struct xio_iovec_ex *isglist = vmsg_sglist(pimsg);
+
+	sd_debug("response on fi_entry %p\n", fi_entry);
+
+	if (!fi_entry->wlen && isglist[0].iov_len)
+		memcpy(fi_entry->buf, isglist[0].iov_base, isglist[0].iov_len);
+
+	fi->nr_done++;
+	if (fi->nr_done == fi->nr_send)
+		xio_context_stop_loop(fi->ctx);
+
+	return 0;
+}
+
+static struct xio_session_ops gw_client_ses_ops = {
+	/* .on_session_event = on_session_event, */
+	.on_session_established = NULL,
+	.on_msg = gw_client_on_response,
+	/* .on_msg_error = on_msg_error, */
+};
+
+struct xio_connection *sd_xio_gw_create_connection(struct xio_context *ctx,
+						   const struct node_id *nid,
+						   void *user_ctx)
+{
+	struct xio_connection *conn;
+	struct xio_session *session;
+	char url[256];
+	struct xio_session_params params;
+	struct xio_connection_params cparams;
+
+	/* if (nid->io_transport_type == IO_TRANSPORT_TYPE_RDMA) */
+	/* 	sprintf(url, "rdma://%s", addr_to_str(nid->io_addr, nid->io_port)); */
+	/* else */
+		sprintf(url, "tcp://%s", addr_to_str(nid->addr, nid->port));
+
+	memset(&params, 0, sizeof(params));
+	params.type = XIO_SESSION_CLIENT;
+	params.ses_ops = &gw_client_ses_ops;
+	params.uri = url;
+	params.user_context = user_ctx;
+
+	session = xio_session_create(&params);
+
+	memset(&cparams, 0, sizeof(cparams));
+	cparams.session = session;
+	cparams.ctx = ctx;
+	cparams.conn_user_context = user_ctx;
+
+	conn = xio_connect(&cparams);
+
+	return conn;
+}
+
+void xio_gw_send_req(struct xio_connection *conn, struct sd_req *hdr, void *data,
+		     bool (*need_retry)(uint32_t epoch), uint32_t epoch,
+		     uint32_t max_count)
+{
+	struct xio_msg xreq;
+	struct sd_rsp rsp;
+
+	memset(&rsp, 0, sizeof(rsp));
+	memset(&xreq, 0, sizeof(xreq));
+	client_msg_vec_init(&xreq);
+	msg_prep_for_send(hdr, &rsp, data, &xreq);
+
+	xio_send_request(conn, &xreq);
 }
 
 void xio_init_main_ctx(void)

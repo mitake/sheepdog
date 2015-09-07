@@ -12,6 +12,10 @@
 
 #include "sheep_priv.h"
 
+#ifdef HAVE_ACCELIO
+#include "xio.h"
+#endif
+
 static inline void gateway_init_fwd_hdr(struct sd_req *fwd, struct sd_req *hdr)
 {
 	memcpy(fwd, hdr, sizeof(*fwd));
@@ -302,8 +306,6 @@ out:
 	return ret;
 }
 
-#ifndef HAVE_ACCELIO
-
 struct forward_info_entry {
 	struct pollfd pfd;
 	const struct node_id *nid;
@@ -482,6 +484,13 @@ static int gateway_forward_request(struct request *req)
 	int nr_copies = get_req_copy_number(req), nr_reqs, nr_to_send = 0;
 	struct req_iter *reqs = NULL;
 
+#ifdef HAVE_ACCELIO
+
+	struct xio_context *ctx;
+	struct xio_forward_info xio_fi;
+
+#endif
+
 	sd_debug("%"PRIx64, oid);
 
 	gateway_init_fwd_hdr(&hdr, &req->rq);
@@ -512,6 +521,8 @@ static int gateway_forward_request(struct request *req)
 		}
 		nr_to_send = ds;
 	}
+
+#ifndef HAVE_ACCELIO
 
 	for (i = 0; i < nr_to_send; i++) {
 		struct sockfd *sfd;
@@ -547,19 +558,41 @@ static int gateway_forward_request(struct request *req)
 		if (ret != SD_RES_SUCCESS)
 			err_ret = ret;
 	}
+
+#else  /* HAVE_ACCELIO */
+
+	ctx = xio_context_create(NULL, 0, -1);
+	memset(&xio_fi, 0, sizeof(xio_fi));
+
+	for (i = 0; i < nr_to_send; i++) {
+		const struct node_id *nid = &target_nodes[i]->nid;
+		struct xio_forward_info_entry *fi_entry = &xio_fi.ent[i];
+		struct xio_connection *conn;
+
+		fi_entry->nid = nid;
+		fi_entry->buf = reqs[i].buf;
+		fi_entry->wlen = reqs[i].wlen;
+		fi_entry->fi = &xio_fi;
+		conn = sd_xio_gw_create_connection(ctx, nid, fi_entry);
+
+		hdr.data_length = reqs[i].dlen;
+		wlen = reqs[i].wlen;
+		hdr.obj.offset = reqs[i].off;
+		hdr.obj.ec_index = i;
+		hdr.obj.copy_policy = req->rq.obj.copy_policy;
+
+		xio_gw_send_req(conn, &hdr, reqs[i].buf, sheep_need_retry,
+				req->rq.epoch, MAX_RETRY_COUNT);
+	}
+
+	xio_context_run_loop(ctx, XIO_INFINITE);
+
+#endif	/* HAVE_ACCELIO */
+
 out:
 	finish_requests(req, reqs, nr_reqs);
 	return err_ret;
 }
-
-#else	/* HAVE_ACCELIO */
-
-static int gateway_forward_request(struct request *req)
-{
-	panic("not implemented yet!");
-}
-
-#endif	/* HAVE_ACCELIO */
 
 static int prepare_obj_refcnt(const struct sd_req *hdr, uint32_t *vids,
 			      struct generation_reference *refs)

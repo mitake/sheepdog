@@ -565,6 +565,7 @@ static int gateway_forward_request(struct request *req)
 
 	memset(&xio_fi, 0, sizeof(xio_fi));
 	xio_fi.nr_send = nr_to_send;
+	xio_fi.ctx = ctx;
 
 	for (i = 0; i < nr_to_send; i++) {
 		const struct node_id *nid = &target_nodes[i]->nid;

@@ -217,14 +217,20 @@ static void msg_finalize(struct sd_req *hdr, void *data, struct xio_msg *xrsp)
 {
 	struct xio_vmsg *pimsg = &xrsp->in;
 	struct xio_iovec_ex *isglist = vmsg_sglist(pimsg);
+	int nents = vmsg_sglist_nents(pimsg);
 	struct sd_rsp *rsp;
-	int body_idx = vmsg_sglist_nents(pimsg) - 1;
 
 	sd_assert(xrsp->in.header.iov_len == sizeof(struct sd_rsp));
 	memcpy(hdr, xrsp->in.header.iov_base, sizeof(*hdr));
 	rsp = (struct sd_rsp *)hdr;
-	if (0 <= body_idx && isglist[body_idx].iov_len && data)
-		memcpy(data, isglist[body_idx].iov_base, isglist[body_idx].iov_len);
+	if (data) {
+		int total = 0;
+
+		for (int i = 0; i < nents; i++) {
+			memcpy((char *)data + total, isglist[i].iov_base, isglist[i].iov_len);
+			total += isglist[i].iov_len;
+		}
+	}
 
 	xio_release_response(xrsp);
 }

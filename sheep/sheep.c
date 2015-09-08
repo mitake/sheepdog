@@ -974,27 +974,27 @@ int main(int argc, char **argv)
 	if (ret)
 		goto cleanup_log;
 
-	/* ret = create_listen_port(bindaddr, port); */
-	/* if (ret) */
-	/* 	goto cleanup_log; */
+	ret = create_listen_port(bindaddr, port);
+	if (ret)
+		goto cleanup_log;
 
 #ifndef HAVE_ACCELIO
 	if (io_addr && create_listen_port(io_addr, io_port))
 		goto cleanup_log;
 #else
-	/* if (io_addr) { */
-		/* bool rdma = false; */
+	if (io_addr) {
+		bool rdma;
 
-		/* if (!strcmp(io_transport, "rdma")) */
-		/* 	rdma = true; */
-		/* else { */
-		/* 	sd_assert(!strcmp(io_transport, "tcp")); */
-		/* 	rdma = false; */
-		/* } */
+		if (!strcmp(io_transport, "rdma"))
+			rdma = true;
+		else {
+			sd_assert(!strcmp(io_transport, "tcp"));
+			rdma = false;
+		}
 
-		if (xio_create_listen_port(bindaddr, port, false))
+		if (xio_create_listen_port(io_addr, io_port, rdma))
 			goto cleanup_log;
-	/* } */
+	}
 #endif
 
 	ret = init_unix_domain_socket(dir);

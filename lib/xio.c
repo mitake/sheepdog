@@ -142,9 +142,9 @@ static struct xio_connection *sd_xio_create_connection(struct xio_context *ctx,
 	struct xio_session_params params;
 	struct xio_connection_params cparams;
 
-	/* if (nid->io_transport_type == IO_TRANSPORT_TYPE_RDMA) */
-	/* 	sprintf(url, "rdma://%s", addr_to_str(nid->io_addr, nid->io_port)); */
-	/* else */
+	if (nid->io_transport_type == IO_TRANSPORT_TYPE_RDMA)
+		sprintf(url, "rdma://%s", addr_to_str(nid->io_addr, nid->io_port));
+	else
 		sprintf(url, "tcp://%s", addr_to_str(nid->addr, nid->port));
 
 	memset(&params, 0, sizeof(params));

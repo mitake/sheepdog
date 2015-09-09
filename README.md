@@ -1,8 +1,6 @@
-Sheepdog: Distributed Storage System for KVM
-============================================
+# Sheepdog: Scalable Distributed Storage System for QEMU and iSCSI initiators
 
-Overview
---------
+## Overview
 Sheepdog is a distributed storage system for QEMU. It provides
 highly available block level storage volumes to virtual machines. 
 Sheepdog supports advanced volume management features such as snapshot,
@@ -18,28 +16,25 @@ For the latest information about Sheepdog, please visit our website at:
 And (recommend for new comers) wiki at:
    https://github.com/sheepdog/sheepdog/wiki/
 
-Requirements
-------------
+## Requirements
 * Three or more x86-64 machines
 * Corosync cluster engine
 
-Install
--------
+## Install
 Please read the INSTALL file distributed with this package for detailed
 instructions on installing or compiling from source.
 
-Usage
------
+## Usage
 
-* Cluster Management Backends
+### Cluster Management Backends
 
    Sheepdog uses a cluster management backend to manage membership and broadcast
    messages to the cluster nodes.
 
    For now, sheepdog can use local driver (for development on a single box),
-   corosync (the default), zookeeper and Accord.
+   corosync (the default), zookeeper.
 
-* Local Driver
+### Local Driver
 
    This driver just makes use of UNIX IPC mechanism to manage the membership
    on a single box, where we start multiple 'sheep' processes to simulate the
@@ -51,7 +46,7 @@ Usage
       $ mkdir /path/to/store
       $ for i in 0 1 2; do sheep -c local /path/to/store/$i -z $i -p 700$i;done
 
-* Configure corosync.
+### Configure corosync.
 
    Nearly every modern Linux distribution has x86_64 corosync binaries pre-built
    available via their repositories. We recommend you use these packages if they
@@ -68,7 +63,7 @@ Usage
    Reference our wiki, the corosync(8) and corosync.conf(5) man page for further
    details.
 
-* Setup Sheepdog
+### Setup Sheepdog
    1. Launch sheepdog on each machines of the cluster.
 
       $ sheep /store_dir
@@ -127,7 +122,7 @@ Usage
         30	e53cebb2617c86fd - 10.68.14.1:7000
         31	ea46913c4999ccdf - 10.68.14.3:7000
 
-* Create a virtual machine image
+### Create a virtual machine image
    1. Create a 256 GB virtual machine image of Alice.
 
       $ qemu-img create sheepdog:Alice 256G
@@ -144,7 +139,7 @@ Usage
         Bob          0  2.0 GB  1.6 GB  0.0 MB 2010-03-23 16:16      80000
         Alice        0  256 GB  0.0 MB  0.0 MB 2010-03-23 16:16      40000
 
-* Boot the virtual machine
+### Boot the virtual machine
    1. Boot the virtual machine.
 
       $ qemu-system-x86_64 -hda sheepdog:Alice
@@ -157,7 +152,7 @@ Usage
       Bob             |   2.0 GB|   1.6 GB|   0.0 MB| running on xx.xx.xx.xx
       Alice           |   256 GB|   0.0 MB|   0.0 MB| not running
 
-* Snapshot
+### Snapshot
    1. Snapshot
 
       $ qemu-img snapshot -c name sheepdog:Alice
@@ -178,7 +173,7 @@ Usage
 
       $ qemu-system-x86_64 -hda sheepdog:Alice:1
 
-* Cloning from the snapshot
+### Cloning from the snapshot
    1. Create a Charlie image as a clone of Alice's image.
 
       $ qemu-img create -b sheepdog:Alice:1 sheepdog:Charlie
@@ -193,12 +188,11 @@ Usage
       s Alice        1  256 GB  0.0 MB  0.0 MB 2010-03-23 16:16      40000
         Charlie      0  256 GB  0.0 MB  0.0 MB 2010-03-23 16:23     100000
 
-Test Environment
-----------------
+## Test Environment
     - Debian squeeze amd64
     - Debian lenny amd64
 
 ===============================================================================
-Copyright (C) 2009-2011, Nippon Telegraph and Telephone Corporation.
+Copyright (C) 2009-2015, Nippon Telegraph and Telephone Corporation.
 
 Join the chat at https://gitter.im/sheepdog/sheepdog

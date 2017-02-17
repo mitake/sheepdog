@@ -419,6 +419,20 @@ static int wq_gway_fwd_parser(const char *s)
 	return 0;
 }
 
+static int wq_remove_threads;
+static int wq_remove_parser(const char *s)
+{
+	wq_remove_threads = atoi(s);
+	return 0;
+}
+
+static int wq_remove_peer_threads;
+static int wq_remove_peer_parser(const char *s)
+{
+	wq_remove_peer_threads = atoi(s);
+	return 0;
+}
+
 static int wq_recovery_threads;
 static int wq_recovery_parser(const char *s)
 {
@@ -439,6 +453,8 @@ static struct option_parser wq_parsers[] = {
 	{ "io=", wq_io_parser },
 	{ "peer=", wq_peer_parser },
 	{ "gway_fwd=", wq_gway_fwd_parser },
+	{ "remove=", wq_remove_parser },
+	{ "remove_peer=", wq_remove_peer_parser },
 	{ "recovery=", wq_recovery_parser },
 	{ "async=", wq_async_parser },
 };
@@ -572,6 +588,27 @@ static int create_work_queues(void)
 	} else {
 		sd_info("gway_fwd workqueue is created as dynamic");
 		sys->gateway_fwd_wqueue = create_work_queue("gway_fwd", WQ_DYNAMIC);
+	}
+	if (wq_gway_fwd_threads) {
+		sd_info("# of threads in gway_fwd workqueue: %d", wq_gway_fwd_threads);
+		sys->gateway_fwd_wqueue = create_fixed_work_queue("gway_fwd", wq_gway_fwd_threads);
+	} else {
+		sd_info("gway_fwd workqueue is created as dynamic");
+		sys->gateway_fwd_wqueue = create_work_queue("gway_fwd", WQ_DYNAMIC);
+	}
+	if (wq_remove_threads) {
+		sd_info("# of threads in remove workqueue: %d", wq_remove_threads);
+		sys->remove_wqueue = create_fixed_work_queue("remove", wq_remove_threads);
+	} else {
+		sd_info("remove workqueue is created as dynamic");
+		sys->remove_wqueue = create_work_queue("remove", WQ_DYNAMIC);
+	}
+	if (wq_remove_peer_threads) {
+		sd_info("# of threads in remove_peer workqueue: %d", wq_remove_peer_threads);
+		sys->remove_peer_wqueue = create_fixed_work_queue("remove_peer", wq_remove_peer_threads);
+	} else {
+		sd_info("remove_peer workqueue is created as dynamic");
+		sys->remove_peer_wqueue = create_work_queue("remove_peer", WQ_DYNAMIC);
 	}
 	if (wq_recovery_threads) {
 		sd_info("# of threads in rw workqueue: %d", wq_recovery_threads);

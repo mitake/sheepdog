@@ -176,7 +176,9 @@ static void objlist_deletion_work(struct work *work)
 		sd_debug("delete object entry %016" PRIx64, entry->oid);
 		rb_erase(&entry->node, &obj_list_cache.root);
 		free(entry);
+		obj_list_cache.cache_size--;
 	}
+	obj_list_cache.tree_version++;
 	sd_rw_unlock(&obj_list_cache.lock);
 }
 
